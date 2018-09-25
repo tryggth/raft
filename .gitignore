@@ -1,0 +1,4 @@
+.stack-work/
+*.sw[ponm]
+raft.cabal
+*~
