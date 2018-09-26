@@ -1,4 +1,6 @@
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
 module Raft where
 
@@ -9,32 +11,43 @@ import Control.Monad.Writer.Strict
 import Raft.Types
 
 data Event
-  = Message
+  = Message -- Message
   | HeartBeatTimeout
   | ElectionTimeout
 
-data Action -- = ...
+data Action
+  = SendMessage NodeId -- Message
+  | Broadcast -- Message
 
-newtype TransitionM a =
-  TransitionM { unTransitionM :: ReaderT NodeConfig (Writer [Action]) a }
+newtype TransitionM a = TransitionM
+  { unTransitionM :: ReaderT NodeConfig (Writer [Action]) a
+  } deriving (Functor, Applicative, Monad)
 
-runTransitionM :: IsValidTransition src dst => NodeConfig -> src -> TransitionM dst -> (dst, [Action])
-runTransitionM config currState transition =
+runTransitionM :: NodeConfig -> TransitionM a -> (a, [Action])
+runTransitionM config transition =
   runWriter (flip runReaderT config (unTransitionM transition))
 
 -- | The main transition function
-handleEvent :: IsValidTransition src dst => src -> Event -> TransitionM (dst, [Action])
-handleEvent = undefined
+handleEvent :: NodeConfig -> NodeState -> Event -> (NodeState, [Action])
+handleEvent config nodeState =
+  runTransitionM config . handleEvent' nodeState
+
+handleEvent' :: NodeState -> Event -> TransitionM NodeState
+handleEvent' nodeState event =
+  case nodeState of
+    NodeFollowerState fs -> NodeFollowerState <$> handleEventFollower fs event
+    NodeCandidateState cs -> NodeCandidateState <$> handleEventCandidate cs event
+    NodeLeaderState ls -> NodeLeaderState <$> handleEventLeader ls event
 
 --------------------------------------------------------------------------------
 -- Follower
 --------------------------------------------------------------------------------
 
 handleEventFollower
-  :: (IsValidTransition src dst, src ~ FollowerState)
+  :: (ValidTransition src dst, src ~ FollowerState)
   => src
   -> Event
-  -> TransitionM (dst, [Action])
+  -> TransitionM dst
 handleEventFollower = undefined
 
 --------------------------------------------------------------------------------
@@ -42,10 +55,10 @@ handleEventFollower = undefined
 --------------------------------------------------------------------------------
 
 handleEventCandidate
-  :: (IsValidTransition src dst, src ~ CandidateState)
+  :: (ValidTransition src dst, src ~ CandidateState)
   => src
   -> Event
-  -> TransitionM (dst, [Action])
+  -> TransitionM dst
 handleEventCandidate = undefined
 
 --------------------------------------------------------------------------------
@@ -53,8 +66,15 @@ handleEventCandidate = undefined
 --------------------------------------------------------------------------------
 
 handleEventLeader
-  :: (IsValidTransition src dst, src ~ LeaderState)
+  :: (ValidTransition src dst, src ~ LeaderState)
   => src
   -> Event
-  -> TransitionM (dst, [Action])
+  -> TransitionM dst
 handleEventLeader = undefined
+
+handleEventLeader'
+  :: (ValidTransition LeaderState dst)
+  => LeaderState
+  -> Event
+  -> TransitionM dst
+handleEventLeader' = undefined

@@ -49,22 +49,33 @@ data NodeType
   | Candidate
   | Leader
 
+-- | Relates a node state record to a type of kind NodeType
 type family StateNodeType a :: NodeType where
   StateNodeType FollowerState = Follower
   StateNodeType CandidateState = Candidate
   StateNodeType LeaderState = Leader
 
+-- | Finds a type in a type level list, yielding a type 'True if the type exists
+-- in the list, or 'False if the type does not
 type family Find (x :: NodeType) (ys :: [NodeType]) where
     Find x '[]       = 'False
     Find x (x ': ys) = 'True
     Find x (y ': ys) = Find x ys
 
+-- | Relates a type of kind NodeType to a list of valid NodeTypes to transition
+-- to. e.g. If a node is a Follower, it may only transition to the Follower
+-- state or Candidate state.
 type family Transitions (s :: NodeType) where
   Transitions Follower = '[Follower, Candidate]
   Transitions Candidate = '[Follower, Candidate, Leader]
   Transitions Leader = '[Leader, Follower]
 
-type IsValidTransition src dst = Find (StateNodeType dst) (Transitions (StateNodeType src)) ~ True
+type ValidTransition src dst = Find (StateNodeType dst) (Transitions (StateNodeType src)) ~ 'True
+
+data NodeState
+  = NodeFollowerState FollowerState
+  | NodeCandidateState CandidateState
+  | NodeLeaderState LeaderState
 
 data FollowerState = FollowerState
   { fsCommitIndex :: Index
