@@ -1,18 +1,26 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE MonoLocalBinds #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE MonoLocalBinds #-}
 
 module Raft.Leader where
 
 import Protolude
 
-import Raft.Monad hiding (HandleRPC(..), HandleTimeout(..))
+import Raft.Monad
 import Raft.Types
 
 --------------------------------------------------------------------------------
 -- Leader
 --------------------------------------------------------------------------------
+
+instance Raft.Monad.HandleRPC Leader v where
+  handleAppendEntries = Raft.Leader.handleAppendEntries
+  handleAppendEntriesResponse = Raft.Leader.handleAppendEntriesResponse
+  handleRequestVote = Raft.Leader.handleRequestVote
+  handleRequestVoteResponse = Raft.Leader.handleRequestVoteResponse
 
 handleAppendEntries :: RPCHandler 'Leader (AppendEntries v) v
 handleAppendEntries = undefined

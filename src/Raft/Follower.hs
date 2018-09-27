@@ -1,18 +1,26 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE MonoLocalBinds #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE MonoLocalBinds #-}
 
 module Raft.Follower where
 
 import Protolude
 
-import Raft.Monad hiding (HandleRPC(..), HandleTimeout(..))
+import Raft.Monad
 import Raft.Types
 
 --------------------------------------------------------------------------------
 -- Follower
 --------------------------------------------------------------------------------
+
+instance Raft.Monad.HandleRPC Follower v where
+  handleAppendEntries = Raft.Follower.handleAppendEntries
+  handleAppendEntriesResponse = Raft.Follower.handleAppendEntriesResponse
+  handleRequestVote = Raft.Follower.handleRequestVote
+  handleRequestVoteResponse = Raft.Follower.handleRequestVoteResponse
 
 handleAppendEntries :: RPCHandler 'Follower (AppendEntries v) v
 handleAppendEntries = undefined

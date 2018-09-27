@@ -1,18 +1,26 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE MonoLocalBinds #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE MonoLocalBinds #-}
 
 module Raft.Candidate where
 
 import Protolude
 
-import Raft.Monad hiding (HandleRPC(..), HandleTimeout(..))
+import Raft.Monad
 import Raft.Types
 
 --------------------------------------------------------------------------------
 -- Candidate
 --------------------------------------------------------------------------------
+
+instance Raft.Monad.HandleRPC Candidate v where
+  handleAppendEntries = Raft.Candidate.handleAppendEntries
+  handleAppendEntriesResponse = Raft.Candidate.handleAppendEntriesResponse
+  handleRequestVote = Raft.Candidate.handleRequestVote
+  handleRequestVoteResponse = Raft.Candidate.handleRequestVoteResponse
 
 handleAppendEntries :: RPCHandler 'Candidate (AppendEntries v) v
 handleAppendEntries = undefined

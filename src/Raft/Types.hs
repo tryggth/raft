@@ -68,31 +68,6 @@ data Action v
 -- Node States
 --------------------------------------------------------------------------------
 
-data Mode
-  = Follower
-  | Candidate
-  | Leader
-
--- | All valid state transitions of a Raft node
-data Transition (init :: Mode) (res :: Mode) where
-  StartElection :: Transition 'Follower 'Candidate
-  RestartElection :: Transition 'Candidate 'Candidate
-  DiscoverLeader :: Transition 'Candidate 'Follower
-  BecomeLeader :: Transition 'Candidate 'Leader
-  DiscoverNewLeader :: Transition 'Leader 'Follower
-  -- TODO Replace with specific transition names
-  Noop :: Transition init init
-
--- | The state of a Raft Node
-data NodeState (a :: Mode) where
-  NodeFollowerState :: FollowerState -> NodeState 'Follower
-  NodeCandidateState :: CandidateState -> NodeState 'Candidate
-  NodeLeaderState :: LeaderState -> NodeState 'Leader
-
--- | The result of a transition
-data ResultState init where
-  ResultState :: Transition init res -> NodeState res -> ResultState init
-
 data FollowerState = FollowerState
   { fsCommitIndex :: Index
     -- ^ index of highest log entry known to be committed
@@ -123,7 +98,10 @@ data LeaderState = LeaderState
 -- RPCs
 --------------------------------------------------------------------------------
 
-data Message v = RPC NodeId (RPC v)
+data Message v = RPC
+  { sender :: NodeId
+  , rpc :: RPC v
+  }
 
 data RPC v
   = AppendEntriesRPC (AppendEntries v)
@@ -131,12 +109,20 @@ data RPC v
   | RequestVoteRPC RequestVote
   | RequestVoteResponseRPC RequestVoteResponse
 
-class RPCType a v
+class RPCType a v where
+  toRPC :: a -> RPC v
 
-instance RPCType (AppendEntries v) v
-instance RPCType (AppendEntriesResponse) v
-instance RPCType (RequestVote) v
-instance RPCType (RequestVoteResponse) v
+instance RPCType (AppendEntries v) v where
+  toRPC = AppendEntriesRPC
+
+instance RPCType (AppendEntriesResponse) v where
+  toRPC = AppendEntriesResponseRPC
+
+instance RPCType (RequestVote) v where
+  toRPC = RequestVoteRPC
+
+instance RPCType (RequestVoteResponse) v where
+  toRPC = RequestVoteResponseRPC
 
 data AppendEntries v = AppendEntries
   { aeTerm :: Term
