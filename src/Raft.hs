@@ -1,6 +1,9 @@
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE TypeOperators #-}
 
 module Raft where
 
@@ -8,73 +11,33 @@ import Protolude
 
 import Control.Monad.Writer.Strict
 
+import Data.Type.Bool
+
+-- import Raft.Follower
+-- import Raft.Candidate
+-- import Raft.Leader
 import Raft.Types
 
-data Event
-  = Message -- Message
-  | HeartBeatTimeout
-  | ElectionTimeout
 
-data Action
-  = SendMessage NodeId -- Message
-  | Broadcast -- Message
-
-newtype TransitionM a = TransitionM
-  { unTransitionM :: ReaderT NodeConfig (Writer [Action]) a
+newtype TransitionM v a = TransitionM
+  { unTransitionM :: ReaderT NodeConfig (Writer [Action v]) a
   } deriving (Functor, Applicative, Monad)
 
-runTransitionM :: NodeConfig -> TransitionM a -> (a, [Action])
+
+runTransitionM :: NodeConfig -> TransitionM v a -> (a, [Action v])
 runTransitionM config transition =
   runWriter (flip runReaderT config (unTransitionM transition))
 
 -- | The main transition function
-handleEvent :: NodeConfig -> NodeState -> Event -> (NodeState, [Action])
-handleEvent config nodeState =
-  runTransitionM config . handleEvent' nodeState
+handleEvent :: NodeConfig -> NodeState -> Event v -> (NodeState, [Action v])
+handleEvent config (NodeState nodeState) event =
+  runTransitionM config $
+    case nodeState of
+      NodeFollowerState fs -> undefined --  Follower.handleEventFollower fs event
+      NodeCandidateState cs -> undefined -- handleEventCandidate cs event
+      NodeLeaderState ls -> undefined -- handleEventLeader ls event
 
-handleEvent' :: NodeState -> Event -> TransitionM NodeState
-handleEvent' nodeState event =
-  case nodeState of
-    NodeFollowerState fs -> NodeFollowerState <$> handleEventFollower fs event
-    NodeCandidateState cs -> NodeCandidateState <$> handleEventCandidate cs event
-    NodeLeaderState ls -> NodeLeaderState <$> handleEventLeader ls event
-
---------------------------------------------------------------------------------
--- Follower
---------------------------------------------------------------------------------
-
-handleEventFollower
-  :: (ValidTransition src dst, src ~ FollowerState)
-  => src
-  -> Event
-  -> TransitionM dst
-handleEventFollower = undefined
-
---------------------------------------------------------------------------------
--- Candidate
---------------------------------------------------------------------------------
-
-handleEventCandidate
-  :: (ValidTransition src dst, src ~ CandidateState)
-  => src
-  -> Event
-  -> TransitionM dst
-handleEventCandidate = undefined
-
---------------------------------------------------------------------------------
--- Leader
---------------------------------------------------------------------------------
-
-handleEventLeader
-  :: (ValidTransition src dst, src ~ LeaderState)
-  => src
-  -> Event
-  -> TransitionM dst
-handleEventLeader = undefined
-
-handleEventLeader'
-  :: (ValidTransition LeaderState dst)
-  => LeaderState
-  -> Event
-  -> TransitionM dst
-handleEventLeader' = undefined
+f
+  :: (InternalState dst, ValidTransition src dst, src ~ FollowerState, dst ~ FollowerState)
+  => TransitionM v FollowerState
+f = pure $ FollowerState 0 0

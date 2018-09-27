@@ -3,6 +3,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE GADTs #-}
 
 module Raft.Types where
@@ -14,6 +15,7 @@ type NodeIds = Set NodeId
 
 newtype Term = Term Int
 newtype Index = Index Int
+  deriving (Num)
 
 data NodeConfig = NodeConfig
   { configNodeId :: NodeId
@@ -22,15 +24,16 @@ data NodeConfig = NodeConfig
   , configElectionHeartbeat :: Int
   }
 
-data Entry a = Entry
+data Entry v = Entry
   { entryTerm :: Term
     -- ^ term when entry was received by leader
   , entryIndex :: Int
     -- ^ index of entry in the log
-  , entryValue :: a
+  , entryValue :: v
     -- ^ command to update state machine
   }
 
+-- | State saved to disk before issuing any RPC
 data PersistentState a = PersistentState
   { psCurrentTerm :: Term
     -- ^ Last term server has seen
@@ -41,41 +44,70 @@ data PersistentState a = PersistentState
   }
 
 --------------------------------------------------------------------------------
+-- Events
+--------------------------------------------------------------------------------
+
+data Timeout = ElectionTimeout
+
+data Event v
+  = RPC (RPC v)
+  | Timeout Timeout
+
+--------------------------------------------------------------------------------
+-- Actions
+--------------------------------------------------------------------------------
+
+data Action v
+  = SendMessage NodeId (RPC v)
+  | Broadcast NodeIds (RPC v)
+  | ResetElectionTimeout
+
+--------------------------------------------------------------------------------
 -- Node States
 --------------------------------------------------------------------------------
 
-data NodeType
+data Mode
   = Follower
   | Candidate
   | Leader
 
--- | Relates a node state record to a type of kind NodeType
-type family StateNodeType a :: NodeType where
-  StateNodeType FollowerState = Follower
-  StateNodeType CandidateState = Candidate
-  StateNodeType LeaderState = Leader
-
 -- | Finds a type in a type level list, yielding a type 'True if the type exists
 -- in the list, or 'False if the type does not
-type family Find (x :: NodeType) (ys :: [NodeType]) where
-    Find x '[]       = 'False
-    Find x (x ': ys) = 'True
-    Find x (y ': ys) = Find x ys
+type family Find (x :: Mode) (ys :: [Mode]) where
+  Find x '[]       = 'False
+  Find x (x ': ys) = 'True
+  Find x (y ': ys) = Find x ys
 
--- | Relates a type of kind NodeType to a list of valid NodeTypes to transition
--- to. e.g. If a node is a Follower, it may only transition to the Follower
--- state or Candidate state.
-type family Transitions (s :: NodeType) where
-  Transitions Follower = '[Follower, Candidate]
-  Transitions Candidate = '[Follower, Candidate, Leader]
-  Transitions Leader = '[Leader, Follower]
+data NodeState' (s :: Mode) where
+  NodeFollowerState :: FollowerState -> NodeState' 'Follower
+  NodeCandidateState :: CandidateState -> NodeState' 'Candidate
+  NodeLeaderState :: LeaderState -> NodeState' 'Leader
 
-type ValidTransition src dst = Find (StateNodeType dst) (Transitions (StateNodeType src)) ~ 'True
+data NodeState where
+  NodeState :: NodeState' s -> NodeState
 
-data NodeState
-  = NodeFollowerState FollowerState
-  | NodeCandidateState CandidateState
-  | NodeLeaderState LeaderState
+class InternalState s where
+  type Transitions s :: [Mode]
+  type NodeStateMode s :: Mode
+  toNodeState :: s -> NodeState
+
+instance InternalState FollowerState where
+  type Transitions FollowerState = '[ 'Follower, 'Candidate ]
+  type NodeStateMode FollowerState = 'Follower
+  toNodeState = NodeState . NodeFollowerState
+
+instance InternalState CandidateState where
+  type Transitions CandidateState = '[ 'Follower, 'Candidate, 'Leader]
+  type NodeStateMode CandidateState = 'Candidate
+  toNodeState = NodeState . NodeCandidateState
+
+instance InternalState LeaderState where
+  type Transitions LeaderState = '[ 'Follower, 'Leader ]
+  type NodeStateMode LeaderState = 'Leader
+  toNodeState = NodeState . NodeLeaderState
+
+type ValidTransition src dst =
+  Find (NodeStateMode dst) (Transitions src) ~ 'True
 
 data FollowerState = FollowerState
   { fsCommitIndex :: Index
@@ -89,6 +121,7 @@ data CandidateState = CandidateState
     -- ^ index of highest log entry known to be committed
   , csLastApplied :: Index
     -- ^ index of highest log entry applied to state machine
+  , csVotes :: Set NodeId
   }
 
 data LeaderState = LeaderState
@@ -106,9 +139,18 @@ data LeaderState = LeaderState
 -- RPCs
 --------------------------------------------------------------------------------
 
--- TODO Map RPC messages to their responses using types...
+{-
+   TODO Map RPC messages to their responses using types...
 
-data AppendEntries a = AppendEntries
+-}
+
+data RPC v
+  = AppendEntriesRPC (AppendEntries v)
+  | AppendEntriesResponseRPC AppendEntriesResponse
+  | RequestVoteRPC RequestVote
+  | RequestVoteResponseRPC RequestVoteResponse
+
+data AppendEntries v = AppendEntries
   { aeTerm :: Term
     -- ^ leader's term
   , aeLeaderId :: NodeId
@@ -117,7 +159,7 @@ data AppendEntries a = AppendEntries
     -- ^ index of log entry immediately preceding new ones
   , aePrevLogTerm :: Term
     -- ^ term of aePrevLogIndex entry
-  , aeEntries :: [Entry a]
+  , aeEntries :: [Entry v]
     -- ^ log entries to store (empty for heartbeat)
   , aeLeaderCommit :: Index
     -- ^ leader's commit index
