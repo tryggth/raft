@@ -3,7 +3,7 @@
 {-# LANGUAGE MonoLocalBinds #-}
 {-# LANGUAGE DataKinds #-}
 
-module Raft.Follower where
+module Raft.Leader where
 
 import Protolude
 
@@ -11,22 +11,22 @@ import Raft.Monad hiding (HandleRPC(..), HandleTimeout(..))
 import Raft.Types
 
 --------------------------------------------------------------------------------
--- Follower
+-- Leader
 --------------------------------------------------------------------------------
 
-handleAppendEntries :: RPCHandler 'Follower (AppendEntries v) v
+handleAppendEntries :: RPCHandler 'Leader (AppendEntries v) v
 handleAppendEntries = undefined
 
--- | Followers should not respond to 'AppendEntriesResponse' messages.
-handleAppendEntriesResponse :: RPCHandler 'Follower AppendEntriesResponse v
+-- | Leaders should not respond to 'AppendEntriesResponse' messages.
+handleAppendEntriesResponse :: RPCHandler 'Leader AppendEntriesResponse v
 handleAppendEntriesResponse = undefined
 
-handleRequestVote :: RPCHandler 'Follower RequestVote v
+handleRequestVote :: RPCHandler 'Leader RequestVote v
 handleRequestVote = undefined
 
--- | Followers should not respond to 'RequestVoteResponse' messages.
-handleRequestVoteResponse :: RPCHandler 'Follower RequestVoteResponse v
+-- | Leaders should not respond to 'RequestVoteResponse' messages.
+handleRequestVoteResponse :: RPCHandler 'Leader RequestVoteResponse v
 handleRequestVoteResponse = undefined
 
-handleTimeout :: TimeoutHandler 'Follower v
+handleTimeout :: TimeoutHandler 'Leader v
 handleTimeout fs timeout = undefined
