@@ -1,10 +1,12 @@
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Raft.Types where
 
@@ -50,7 +52,7 @@ data PersistentState a = PersistentState
 data Timeout = ElectionTimeout
 
 data Event v
-  = RPC (RPC v)
+  = Message (Message v)
   | Timeout Timeout
 
 --------------------------------------------------------------------------------
@@ -58,8 +60,8 @@ data Event v
 --------------------------------------------------------------------------------
 
 data Action v
-  = SendMessage NodeId (RPC v)
-  | Broadcast NodeIds (RPC v)
+  = SendMessage NodeId (Message v)
+  | Broadcast NodeIds (Message v)
   | ResetElectionTimeout
 
 --------------------------------------------------------------------------------
@@ -71,43 +73,25 @@ data Mode
   | Candidate
   | Leader
 
--- | Finds a type in a type level list, yielding a type 'True if the type exists
--- in the list, or 'False if the type does not
-type family Find (x :: Mode) (ys :: [Mode]) where
-  Find x '[]       = 'False
-  Find x (x ': ys) = 'True
-  Find x (y ': ys) = Find x ys
+-- | All valid state transitions of a Raft node
+data Transition (init :: Mode) (res :: Mode) where
+  StartElection :: Transition 'Follower 'Candidate
+  RestartElection :: Transition 'Candidate 'Candidate
+  DiscoverLeader :: Transition 'Candidate 'Follower
+  BecomeLeader :: Transition 'Candidate 'Leader
+  DiscoverNewLeader :: Transition 'Leader 'Follower
+  -- TODO Replace with specific transition names
+  Noop :: Transition init init
 
-data NodeState' (s :: Mode) where
-  NodeFollowerState :: FollowerState -> NodeState' 'Follower
-  NodeCandidateState :: CandidateState -> NodeState' 'Candidate
-  NodeLeaderState :: LeaderState -> NodeState' 'Leader
+-- | The state of a Raft Node
+data NodeState (a :: Mode) where
+  NodeFollowerState :: FollowerState -> NodeState 'Follower
+  NodeCandidateState :: CandidateState -> NodeState 'Candidate
+  NodeLeaderState :: LeaderState -> NodeState 'Leader
 
-data NodeState where
-  NodeState :: NodeState' s -> NodeState
-
-class InternalState s where
-  type Transitions s :: [Mode]
-  type NodeStateMode s :: Mode
-  toNodeState :: s -> NodeState
-
-instance InternalState FollowerState where
-  type Transitions FollowerState = '[ 'Follower, 'Candidate ]
-  type NodeStateMode FollowerState = 'Follower
-  toNodeState = NodeState . NodeFollowerState
-
-instance InternalState CandidateState where
-  type Transitions CandidateState = '[ 'Follower, 'Candidate, 'Leader]
-  type NodeStateMode CandidateState = 'Candidate
-  toNodeState = NodeState . NodeCandidateState
-
-instance InternalState LeaderState where
-  type Transitions LeaderState = '[ 'Follower, 'Leader ]
-  type NodeStateMode LeaderState = 'Leader
-  toNodeState = NodeState . NodeLeaderState
-
-type ValidTransition src dst =
-  Find (NodeStateMode dst) (Transitions src) ~ 'True
+-- | The result of a transition
+data ResultState init where
+  ResultState :: Transition init res -> NodeState res -> ResultState init
 
 data FollowerState = FollowerState
   { fsCommitIndex :: Index
@@ -139,16 +123,20 @@ data LeaderState = LeaderState
 -- RPCs
 --------------------------------------------------------------------------------
 
-{-
-   TODO Map RPC messages to their responses using types...
-
--}
+data Message v = RPC NodeId (RPC v)
 
 data RPC v
   = AppendEntriesRPC (AppendEntries v)
   | AppendEntriesResponseRPC AppendEntriesResponse
   | RequestVoteRPC RequestVote
   | RequestVoteResponseRPC RequestVoteResponse
+
+class RPCType a v
+
+instance RPCType (AppendEntries v) v
+instance RPCType (AppendEntriesResponse) v
+instance RPCType (RequestVote) v
+instance RPCType (RequestVoteResponse) v
 
 data AppendEntries v = AppendEntries
   { aeTerm :: Term

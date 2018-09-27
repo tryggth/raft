@@ -1,70 +1,52 @@
-{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE MonoLocalBinds #-}
+{-# LANGUAGE DataKinds #-}
 
 module Raft.Follower where
 
 import Protolude
 
-import Raft
+import Raft.Monad
 import Raft.Types
 
 --------------------------------------------------------------------------------
 -- Follower
 --------------------------------------------------------------------------------
 
-handleEvent
-  :: FollowerState
-  -> Event v
-  -> TransitionM v NodeState
+handleEvent :: EventHandler 'Follower v
 handleEvent fs event =
-    case event of
-      RPC rpc -> toNodeState <$> handleRPC fs rpc
+  case event of
+    Message msg -> handleMessage fs msg
+    Timeout tout -> handleTimeout fs tout
 
-handleRPC
-  :: (InternalState res, ValidTransition init res, init ~ FollowerState, res ~ FollowerState)
-  => init
-  -> RPC v
-  -> TransitionM v res
-handleRPC fs rpc =
+handleMessage :: MessageHandler 'Follower v
+handleMessage fs (RPC sender rpc) =
   case rpc of
     AppendEntriesRPC appendEntries ->
-      handleAppendEntries fs appendEntries
+      handleAppendEntries fs sender appendEntries
     AppendEntriesResponseRPC appendEntriesResp ->
-      handleAppendEntriesResponse fs appendEntriesResp
+      handleAppendEntriesResponse fs sender appendEntriesResp
     RequestVoteRPC requestVote ->
-      handleRequestVote fs requestVote
+      handleRequestVote fs sender requestVote
     RequestVoteResponseRPC requestVoteResp ->
-      handleRequestVoteResponse fs requestVoteResp
-  where
-    handleAppendEntries
-      :: FollowerState
-      -> AppendEntries v
-      -> TransitionM v res
-    handleAppendEntries = undefined
+      handleRequestVoteResponse fs sender requestVoteResp
 
-    -- | Followers should not respond to 'AppendEntriesResponse' messages.
-    handleAppendEntriesResponse
-      :: FollowerState
-      -> AppendEntriesResponse
-      -> TransitionM v res
-    handleAppendEntriesResponse = undefined
+handleAppendEntries :: RPCHandler 'Follower (AppendEntries v) v
+handleAppendEntries = undefined
 
-    handleRequestVote
-      :: FollowerState
-      -> RequestVote
-      -> TransitionM v res
-    handleRequestVote = undefined
+-- | Followers should not respond to 'AppendEntriesResponse' messages.
+handleAppendEntriesResponse :: RPCHandler 'Follower AppendEntriesResponse v
+handleAppendEntriesResponse = undefined
 
-    handleRequestVoteResponse
-      :: FollowerState
-      -> RequestVoteResponse
-      -> TransitionM v res
-    handleRequestVoteResponse = undefined
+handleRequestVote :: RPCHandler 'Follower RequestVote v
+handleRequestVote = undefined
 
-handleTimeout
-  :: (InternalState res, ValidTransition FollowerState res, res ~ CandidateState)
-  => FollowerState
-  -> Timeout
-  -> TransitionM v res
+-- | Followers should not respond to 'RequestVoteResponse' messages.
+handleRequestVoteResponse :: RPCHandler 'Follower RequestVoteResponse v
+handleRequestVoteResponse = undefined
+
+handleTimeout :: TimeoutHandler 'Follower v
 handleTimeout fs timeout =
   case timeout of
     ElectionTimeout -> undefined
