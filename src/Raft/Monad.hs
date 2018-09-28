@@ -115,3 +115,9 @@ resetElectionTimeout :: TransitionM a ()
 resetElectionTimeout = do
     t <- asks configElectionTimeout
     tell [ResetElectionTimeout t]
+
+hasMajority :: Set a -> Set b -> Bool
+hasMajority totalNodeIds votes =
+  Set.size votes >= Set.size totalNodeIds `div` 2 + 1
+
+

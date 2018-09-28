@@ -6,6 +6,7 @@
 {-# LANGUAGE MonoLocalBinds #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE MultiWayIf #-}
 
 module Raft.Candidate where
 
@@ -58,7 +59,20 @@ handleRequestVote (currentState@(NodeCandidateState CandidateState{..})) sender 
 
 -- | Candidates should not respond to 'RequestVoteResponse' messages.
 handleRequestVoteResponse :: RPCHandler 'Candidate RequestVoteResponse v
-handleRequestVoteResponse = undefined
+handleRequestVoteResponse (currentState@(NodeCandidateState CandidateState{..})) sender requestVoteResp@RequestVoteResponse{..} = do
+  currentTerm <- gets psCurrentTerm
+  nodeIds <- asks configNodeIds
+  if  | rvrTerm < currentTerm -> pure $ ResultState Noop currentState
+      | rvrTerm > currentTerm -> stepDown sender rvrTerm csCommitIndex csLastApplied
+      | not rvrVoteGranted -> pure $ ResultState Noop currentState
+      | Set.member sender csVotes -> pure $ ResultState Noop currentState
+      | otherwise -> do
+          let newCsVotes = Set.insert sender csVotes
+
+          if (not $ hasMajority nodeIds newCsVotes)
+            then pure $ ResultState Noop currentState
+            else notImplemented -- TODO: Stepup
+
 
 handleTimeout :: TimeoutHandler 'Candidate v
 handleTimeout fs timeout = undefined
