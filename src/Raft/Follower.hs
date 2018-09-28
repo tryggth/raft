@@ -4,6 +4,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE MonoLocalBinds #-}
 
 module Raft.Follower (
@@ -25,8 +26,28 @@ import Raft.Types
 -- Follower
 --------------------------------------------------------------------------------
 
+-- | Handle AppendEntries RPC message from Leader
+-- Sections 5.2 and 5.3 of Raft Paper
+--
+-- Note: see 'PersistentState' datatype for discussion about not keeping the
+-- entire log in memory.
 handleAppendEntries :: RPCHandler 'Follower (AppendEntries v) v
-handleAppendEntries = undefined
+handleAppendEntries (NodeFollowerState fs) sender AppendEntries{..} = do
+      PersistentState{..} <- get
+      success <-
+        case lookupLogEntry aePrevLogIndex psLog of
+          Nothing -> pure False
+          Just le
+            | entryTerm le == aePrevLogTerm -> pure True
+            | otherwise -> undefined
+                -- removeLogsFromIndex aePrev
+      pure (followerResultState Noop fs)
+    where
+      removeLogsFromIndex :: Index -> TransitionM v ()
+      removeLogsFromIndex idx =
+        modify $ \pstate ->
+          let log = psLog pstate
+           in pstate { psLog = dropLogEntriesUntil log idx }
 
 -- | Followers should not respond to 'AppendEntriesResponse' messages.
 handleAppendEntriesResponse :: RPCHandler 'Follower AppendEntriesResponse v
@@ -34,7 +55,29 @@ handleAppendEntriesResponse (NodeFollowerState fs) _ _ =
   pure (followerResultState Noop fs)
 
 handleRequestVote :: RPCHandler 'Follower RequestVote v
-handleRequestVote = undefined
+handleRequestVote (NodeFollowerState fs) sender RequestVote{..} = do
+    PersistentState{..} <- get
+    let voteGranted = giveVote psCurrentTerm psVotedFor psLog
+    send sender $ RequestVoteResponse
+      { rvrTerm = psCurrentTerm
+      , rvrVoteGranted = voteGranted
+      }
+    pure $ followerResultState Noop fs
+  where
+    giveVote term mVotedFor log =
+      and [ term < rvTerm
+          , validCandidateId mVotedFor
+          , validCandidateLog log
+          ]
+
+    validCandidateId Nothing = True
+    validCandidateId (Just cid) = cid == rvCandidateId
+
+    -- Check if the requesting candidate's log is more up to date
+    -- Section 5.4.1 in Raft Paper
+    validCandidateLog log =
+      let (idx, term) = lastLogEntryIndexAndTerm log
+       in term < rvLastLogTerm && idx < rvLastLogIndex
 
 -- | Followers should not respond to 'RequestVoteResponse' messages.
 handleRequestVoteResponse :: RPCHandler 'Follower RequestVoteResponse v
@@ -64,11 +107,8 @@ handleTimeout (NodeFollowerState fs) timeout =
     requestVoteMessage = do
       term <- gets psCurrentTerm
       candidateId <- asks configNodeId
-      mLastLogEntry <- lastLogEntry <$> gets psLog
-      let (logEntryIndex, logEntryTerm) =
-            case mLastLogEntry of
-              Nothing -> (index0, term0)
-              Just le -> second entryTerm le
+      (logEntryIndex, logEntryTerm) <-
+        lastLogEntryIndexAndTerm <$> gets psLog
       pure RequestVote
         { rvTerm = term
         , rvCandidateId = candidateId
