@@ -29,14 +29,11 @@ instance RaftHandler Candidate v where
   handleTimeout = Raft.Candidate.handleTimeout
 
 handleAppendEntries :: RPCHandler 'Candidate (AppendEntries v) v
-handleAppendEntries
-  (nodeCandidateState@(NodeCandidateState candidateState@CandidateState{..}))
-  sender
-  (appendEntries@AppendEntries {..}) = do
+handleAppendEntries (currentState@(NodeCandidateState CandidateState{..})) sender AppendEntries {..} = do
   currentTerm <- gets psCurrentTerm
   if currentTerm <= aeTerm
   then stepDown sender aeTerm csCommitIndex csLastApplied
-  else pure $ ResultState Noop nodeCandidateState
+  else pure $ ResultState Noop currentState
 
 stepDown :: NodeId -> Term -> Index -> Index -> TransitionM a (ResultState 'Candidate v)
 stepDown sender term commitIndex lastApplied = do
@@ -47,7 +44,9 @@ stepDown sender term commitIndex lastApplied = do
 
 -- | Candidates should not respond to 'AppendEntriesResponse' messages.
 handleAppendEntriesResponse :: RPCHandler 'Candidate AppendEntriesResponse v
-handleAppendEntriesResponse = undefined
+handleAppendEntriesResponse currentState sender appendEntriesResp =
+  pure $ ResultState Noop currentState
+
 
 handleRequestVote :: RPCHandler 'Candidate RequestVote v
 handleRequestVote = undefined
