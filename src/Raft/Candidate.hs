@@ -30,19 +30,19 @@ instance RaftHandler Candidate v where
 
 handleAppendEntries :: RPCHandler 'Candidate (AppendEntries v) v
 handleAppendEntries
-  (NodeCandidateState candidateState@CandidateState{..})
+  (nodeCandidateState@(NodeCandidateState candidateState@CandidateState{..}))
   sender
   (appendEntries@AppendEntries {..}) = do
   currentTerm <- gets psCurrentTerm
   if currentTerm <= aeTerm
-  then stepDown sender aeTerm csCommitIndex
-  else notImplemented
+  then stepDown sender aeTerm csCommitIndex csLastApplied
+  else pure $ ResultState Noop nodeCandidateState
 
-stepDown :: NodeId -> Term -> Index -> TransitionM a (ResultState 'Candidate v)
-stepDown sender term commitIndex = do
+stepDown :: NodeId -> Term -> Index -> Index -> TransitionM a (ResultState 'Candidate v)
+stepDown sender term commitIndex lastApplied = do
   resetElectionTimeout
   send sender (RequestVoteResponse term True)
-  pure $ ResultState DiscoverLeader (NodeFollowerState (FollowerState commitIndex (Index 0))) -- TODO: fsLastApplied
+  pure $ ResultState DiscoverLeader (NodeFollowerState (FollowerState commitIndex lastApplied))
 
 
 -- | Candidates should not respond to 'AppendEntriesResponse' messages.
