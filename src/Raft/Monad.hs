@@ -12,6 +12,7 @@ module Raft.Monad where
 import Protolude
 
 import Control.Monad.RWS
+import qualified Data.Set as Set
 
 import Raft.Types
 
@@ -92,9 +93,10 @@ toRPCMessage msg = flip RPC (toRPC msg) <$> asks configNodeId
 
 broadcast :: RPCType r v => r -> TransitionM v ()
 broadcast msg = do
+  myNodeId <- asks configNodeId
   action <-
     Broadcast
-      <$> asks configNodeIds
+      <$> asks (Set.filter (myNodeId /=) . configNodeIds)
       <*> toRPCMessage msg
   tell [action]
 
