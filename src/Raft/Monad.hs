@@ -35,14 +35,6 @@ runTransitionM nodeConfig persistentState transition =
 -- Handlers
 --------------------------------------------------------------------------------
 
-class RaftHandler s v where
-  handleAppendEntries :: RPCHandler s (AppendEntries v) v
-  handleAppendEntriesResponse :: RPCHandler s AppendEntriesResponse v
-  handleRequestVote :: RPCHandler s RequestVote v
-  handleRequestVoteResponse :: RPCHandler s RequestVoteResponse v
-  handleTimeout :: TimeoutHandler s v
-
-type MessageHandler s v = NodeState s -> Message v -> TransitionM v (ResultState s v)
 type RPCHandler s r v = RPCType r v => NodeState s -> NodeId -> r -> TransitionM v (ResultState s v)
 type TimeoutHandler s v = NodeState s -> Timeout -> TransitionM v (ResultState s v)
 
@@ -74,13 +66,32 @@ data NodeState (a :: Mode) where
 
 -- | Existential type hiding the result type of a transition
 data ResultState init v where
-  ResultState
-    :: forall v init res. (RaftHandler res v)
-    => Transition init res -> NodeState res -> ResultState init v
+  ResultState :: Transition init res -> NodeState res -> ResultState init v
+
+followerResultState
+  :: Transition init 'Follower
+  -> FollowerState
+  -> ResultState init v
+followerResultState transition fstate =
+  ResultState transition (NodeFollowerState fstate)
+
+candidateResultState
+  :: Transition init 'Candidate
+  -> CandidateState
+  -> ResultState init v
+candidateResultState transition cstate =
+  ResultState transition (NodeCandidateState cstate)
+
+leaderResultState
+  :: Transition init 'Leader
+  -> LeaderState
+  -> ResultState init v
+leaderResultState transition lstate =
+  ResultState transition (NodeLeaderState lstate)
 
 -- | Existential type hiding the internal node state
 data RaftNodeState v where
-  RaftNodeState :: (RaftHandler s v) => NodeState s -> RaftNodeState v
+  RaftNodeState :: NodeState s -> RaftNodeState v
 
 --------------------------------------------------------------------------------
 -- DSL (TODO move to src/Raft/Action.hs)
@@ -102,6 +113,9 @@ send :: RPCType r v => r -> TransitionM v ()
 send msg = do
   action <- SendMessage <$> asks configNodeId <*> toRPCMessage msg
   tell [action]
+
+resetElectionTimer :: TransitionM v ()
+resetElectionTimer = tell [ResetElectionTimeout]
 
 incrementTerm :: TransitionM v ()
 incrementTerm = do
