@@ -35,7 +35,7 @@ handleAppendEntries
   (appendEntries@AppendEntries {..}) = do
   currentTerm <- gets psCurrentTerm
   if currentTerm <= aeTerm
-  then stepDown sender currentTerm csCommitIndex
+  then stepDown sender aeTerm csCommitIndex
   else notImplemented
 
 stepDown :: NodeId -> Term -> Index -> TransitionM a (ResultState 'Candidate v)
