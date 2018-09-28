@@ -27,21 +27,23 @@ import Raft.Types
 handleEvent
   :: NodeConfig
   -> RaftNodeState v
+  -> PersistentState v
   -> Event v
-  -> (RaftNodeState v, [Action v])
-handleEvent nodeConfig (RaftNodeState nodeState) event =
-  case handleEvent' nodeConfig nodeState event of
-    (ResultState _ resultState, actions) ->
-      (RaftNodeState resultState, actions)
+  -> (RaftNodeState v, PersistentState v, [Action v])
+handleEvent nodeConfig (RaftNodeState nodeState) persistentState event =
+  case handleEvent' nodeConfig nodeState persistentState event of
+    (ResultState _ resultState, persistentState, actions) ->
+      (RaftNodeState resultState, persistentState, actions)
 
 handleEvent'
   :: forall s v. (RaftHandler s v)
   => NodeConfig
   -> NodeState s
+  -> PersistentState v
   -> Event v
-  -> (ResultState s v, [Action v])
-handleEvent' nodeConfig nodeState event =
-    runTransitionM nodeConfig $
+  -> (ResultState s v, PersistentState v, [Action v])
+handleEvent' nodeConfig nodeState persistentState event =
+    runTransitionM nodeConfig persistentState $
       case event of
         Message msg -> handleMessage nodeState msg
         Timeout tout -> handleTimeout nodeState tout

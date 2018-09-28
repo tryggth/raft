@@ -29,19 +29,19 @@ data NodeConfig = NodeConfig
 data Entry v = Entry
   { entryTerm :: Term
     -- ^ term when entry was received by leader
-  , entryIndex :: Int
-    -- ^ index of entry in the log
   , entryValue :: v
     -- ^ command to update state machine
   }
 
+type Log v = IntMap (Entry v)
+
 -- | State saved to disk before issuing any RPC
-data PersistentState a = PersistentState
+data PersistentState v = PersistentState
   { psCurrentTerm :: Term
     -- ^ Last term server has seen
   , psVotedFor :: Maybe NodeId
     -- ^ candidate id that received vote in current term
-  , psLog :: [Entry a]
+  , psLog :: Log v
     -- ^ log entries; each entry contains command for state machine
   }
 

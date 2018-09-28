@@ -11,7 +11,7 @@ module Raft.Monad where
 
 import Protolude
 
-import Control.Monad.Writer
+import Control.Monad.RWS
 
 import Raft.Types
 
@@ -20,12 +20,16 @@ import Raft.Types
 --------------------------------------------------------------------------------
 
 newtype TransitionM v a = TransitionM
-  { unTransitionM :: ReaderT NodeConfig (Writer [Action v]) a
-  } deriving (Functor, Applicative, Monad)
+  { unTransitionM :: RWS NodeConfig [Action v] (PersistentState v) a
+  } deriving (Functor, Applicative, Monad, MonadReader NodeConfig, MonadState (PersistentState v))
 
-runTransitionM :: NodeConfig -> TransitionM v a -> (a, [Action v])
-runTransitionM config transition =
-  runWriter (flip runReaderT config (unTransitionM transition))
+runTransitionM
+  :: NodeConfig
+  -> PersistentState v
+  -> TransitionM v a
+  -> (a, PersistentState v, [Action v])
+runTransitionM nodeConfig persistentState transition =
+  runRWS (unTransitionM transition) nodeConfig persistentState
 
 --------------------------------------------------------------------------------
 -- Handlers
@@ -62,7 +66,7 @@ data Transition (init :: Mode) (res :: Mode) where
   -- TODO Replace with specific transition names
   Noop :: Transition init init
 
--- | The state of a Raft Node
+-- | The volatile state of a Raft Node
 data NodeState (a :: Mode) where
   NodeFollowerState :: FollowerState -> NodeState 'Follower
   NodeCandidateState :: CandidateState -> NodeState 'Candidate
