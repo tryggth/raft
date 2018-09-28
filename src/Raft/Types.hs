@@ -16,6 +16,7 @@ type NodeId = ByteString
 type NodeIds = Set NodeId
 
 newtype Term = Term Int
+  deriving (Eq, Ord, Num)
 newtype Index = Index Int
   deriving (Num)
 
