@@ -98,9 +98,9 @@ broadcast msg = do
       <*> toRPCMessage msg
   tell [action]
 
-send :: RPCType r v => r -> TransitionM v ()
-send msg = do
-  action <- SendMessage <$> asks configNodeId <*> toRPCMessage msg
+send :: RPCType r v => NodeId -> r -> TransitionM v ()
+send nodeId msg = do
+  action <- SendMessage nodeId <$> toRPCMessage msg
   tell [action]
 
 incrementTerm :: TransitionM v ()
