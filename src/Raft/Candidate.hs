@@ -32,8 +32,8 @@ handleAppendEntries :: RPCHandler 'Candidate (AppendEntries v) v
 handleAppendEntries (currentState@(NodeCandidateState CandidateState{..})) sender AppendEntries {..} = do
   currentTerm <- gets psCurrentTerm
   if currentTerm <= aeTerm
-  then stepDown sender aeTerm csCommitIndex csLastApplied
-  else pure $ ResultState Noop currentState
+    then stepDown sender aeTerm csCommitIndex csLastApplied
+    else pure $ ResultState Noop currentState
 
 stepDown :: NodeId -> Term -> Index -> Index -> TransitionM a (ResultState 'Candidate v)
 stepDown sender term commitIndex lastApplied = do
@@ -41,15 +41,20 @@ stepDown sender term commitIndex lastApplied = do
   send sender (RequestVoteResponse term True)
   pure $ ResultState DiscoverLeader (NodeFollowerState (FollowerState commitIndex lastApplied))
 
-
 -- | Candidates should not respond to 'AppendEntriesResponse' messages.
 handleAppendEntriesResponse :: RPCHandler 'Candidate AppendEntriesResponse v
-handleAppendEntriesResponse currentState sender appendEntriesResp =
+handleAppendEntriesResponse currentState _sender _appendEntriesResp =
   pure $ ResultState Noop currentState
 
 
 handleRequestVote :: RPCHandler 'Candidate RequestVote v
-handleRequestVote = undefined
+handleRequestVote (currentState@(NodeCandidateState CandidateState{..})) sender requestVote@RequestVote{..} = do
+  currentTerm <- gets psCurrentTerm
+  if rvTerm > currentTerm
+    then stepDown sender rvTerm csCommitIndex csLastApplied
+    else do
+      send sender (RequestVoteResponse currentTerm False)
+      pure $ ResultState Noop currentState
 
 -- | Candidates should not respond to 'RequestVoteResponse' messages.
 handleRequestVoteResponse :: RPCHandler 'Candidate RequestVoteResponse v
