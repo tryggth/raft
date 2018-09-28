@@ -23,6 +23,7 @@ dependencies:
 - base >= 4.7 && < 5
 - protolude
 - mtl
+- containers
 
 default-extensions:
   NoImplicitPrelude
@@ -50,4 +51,10 @@ tests:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
+    - base
+    - tasty
+    - tasty-discover
+    - tasty-hunit
+    - tasty-quickcheck
+    - QuickCheck
     - raft
