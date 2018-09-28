@@ -21,7 +21,7 @@ import Raft.Types
 
 newtype TransitionM v a = TransitionM
   { unTransitionM :: RWS NodeConfig [Action v] (PersistentState v) a
-  } deriving (Functor, Applicative, Monad, MonadReader NodeConfig, MonadState (PersistentState v))
+  } deriving (Functor, Applicative, Monad, MonadWriter [Action v], MonadReader NodeConfig, MonadState (PersistentState v))
 
 runTransitionM
   :: NodeConfig
@@ -81,3 +81,35 @@ data ResultState init v where
 -- | Existential type hiding the internal node state
 data RaftNodeState v where
   RaftNodeState :: (RaftHandler s v) => NodeState s -> RaftNodeState v
+
+--------------------------------------------------------------------------------
+-- DSL (TODO move to src/Raft/Action.hs)
+--------------------------------------------------------------------------------
+
+-- | Helper for message actions
+toRPCMessage :: RPCType r v => r -> TransitionM v (Message v)
+toRPCMessage msg = flip RPC (toRPC msg) <$> asks configNodeId
+
+broadcast :: RPCType r v => r -> TransitionM v ()
+broadcast msg = do
+  action <-
+    Broadcast
+      <$> asks configNodeIds
+      <*> toRPCMessage msg
+  tell [action]
+
+send :: RPCType r v => NodeId -> r -> TransitionM v ()
+send nodeId msg = do
+  action <- SendMessage nodeId <$> toRPCMessage msg
+  tell [action]
+
+incrementTerm :: TransitionM v ()
+incrementTerm = do
+  modify $ \pstate ->
+    pstate { psCurrentTerm = incrTerm (psCurrentTerm pstate) }
+
+-- | Resets the election timeout.
+resetElectionTimeout :: TransitionM a ()
+resetElectionTimeout = do
+    t <- asks configElectionTimeout
+    tell [ResetElectionTimeout t]
