@@ -50,4 +50,10 @@ tests:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
+    - base
+    - tasty
+    - tasty-discover
+    - tasty-hunit
+    - tasty-quickcheck
+    - QuickCheck
     - raft
