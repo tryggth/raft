@@ -16,11 +16,12 @@ import Raft.Types
 -- Follower
 --------------------------------------------------------------------------------
 
-instance Raft.Monad.HandleRPC Follower v where
+instance RaftHandler Follower v where
   handleAppendEntries = Raft.Follower.handleAppendEntries
   handleAppendEntriesResponse = Raft.Follower.handleAppendEntriesResponse
   handleRequestVote = Raft.Follower.handleRequestVote
   handleRequestVoteResponse = Raft.Follower.handleRequestVoteResponse
+  handleTimeout = Raft.Follower.handleTimeout
 
 handleAppendEntries :: RPCHandler 'Follower (AppendEntries v) v
 handleAppendEntries = undefined

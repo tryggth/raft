@@ -35,7 +35,7 @@ handleEvent nodeConfig (RaftNodeState nodeState) event =
       (RaftNodeState resultState, actions)
 
 handleEvent'
-  :: forall s v. (HandleRPC s v, HandleTimeout s v)
+  :: forall s v. (RaftHandler s v)
   => NodeConfig
   -> NodeState s
   -> Event v

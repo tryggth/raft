@@ -31,13 +31,11 @@ runTransitionM config transition =
 -- Handlers
 --------------------------------------------------------------------------------
 
-class HandleRPC s v where
+class RaftHandler s v where
   handleAppendEntries :: RPCHandler s (AppendEntries v) v
   handleAppendEntriesResponse :: RPCHandler s AppendEntriesResponse v
   handleRequestVote :: RPCHandler s RequestVote v
   handleRequestVoteResponse :: RPCHandler s RequestVoteResponse v
-
-class HandleTimeout s v where
   handleTimeout :: TimeoutHandler s v
 
 type MessageHandler s v = NodeState s -> Message v -> TransitionM v (ResultState s v)
@@ -73,9 +71,9 @@ data NodeState (a :: Mode) where
 -- | Existential type hiding the result type of a transition
 data ResultState init v where
   ResultState
-    :: forall v init res. (HandleRPC res v, HandleTimeout res v)
+    :: forall v init res. (RaftHandler res v)
     => Transition init res -> NodeState res -> ResultState init v
 
 -- | Existential type hiding the internal node state
 data RaftNodeState v where
-  RaftNodeState :: (HandleRPC s v, HandleTimeout s v) => NodeState s -> RaftNodeState v
+  RaftNodeState :: (RaftHandler s v) => NodeState s -> RaftNodeState v
