@@ -16,13 +16,6 @@ import Raft.Types
 -- Leader
 --------------------------------------------------------------------------------
 
-instance RaftHandler Leader v where
-  handleAppendEntries = Raft.Leader.handleAppendEntries
-  handleAppendEntriesResponse = Raft.Leader.handleAppendEntriesResponse
-  handleRequestVote = Raft.Leader.handleRequestVote
-  handleRequestVoteResponse = Raft.Leader.handleRequestVoteResponse
-  handleTimeout = Raft.Leader.handleTimeout
-
 handleAppendEntries :: RPCHandler 'Leader (AppendEntries v) v
 handleAppendEntries = undefined
 

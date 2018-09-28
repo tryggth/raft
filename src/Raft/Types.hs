@@ -22,11 +22,17 @@ type NodeIds = Set NodeId
 newtype Term = Term Natural
   deriving (Enum)
 
+term0 :: Term
+term0 = Term 0
+
 incrTerm :: Term -> Term
 incrTerm = succ
 
 newtype Index = Index Natural
   deriving (Enum)
+
+index0 :: Index
+index0 = Index 0
 
 incrIndex :: Index -> Index
 incrIndex = succ
