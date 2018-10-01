@@ -87,11 +87,8 @@ lookupLogEntry :: Index -> Log v -> Maybe (Entry v)
 lookupLogEntry idx (Log log) =
   Seq.lookup (fromIntegral idx) log
 
-lastLogEntry :: Log v -> Maybe (Index, Entry v)
-lastLogEntry (Log entries) = do
-  e <- lastEntry entries
-  let logIndex = fromIntegral (Seq.length entries - 1)
-  pure (Index logIndex, e)
+lastLogEntry :: Log v -> Maybe (Entry v)
+lastLogEntry (Log entries) = lastEntry entries
 
 lastEntry :: Seq (Entry v) -> Maybe (Entry v)
 lastEntry Empty = Nothing
@@ -104,7 +101,7 @@ lastLogEntryIndexAndTerm log =
     -- TODO: Is term0 the default term when there are no logs?
     -- If we store a log for each new election, then the default term can be 0
     Nothing -> (index0, term0)
-    Just le -> second entryTerm le
+    Just entry -> (entryIndex entry, entryTerm entry)
 
 dropLogEntriesUntil :: Log v -> Index -> Log v
 dropLogEntriesUntil (Log log) idx =
