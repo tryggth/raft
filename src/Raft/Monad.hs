@@ -12,6 +12,9 @@ module Raft.Monad where
 import Protolude
 
 import Control.Monad.RWS
+import qualified Data.Set as Set
+import qualified Data.Map as Map
+import qualified Data.Sequence as Seq
 
 import Raft.Types
 
@@ -103,9 +106,10 @@ toRPCMessage msg = flip RPC (toRPC msg) <$> asks configNodeId
 
 broadcast :: RPCType r v => r -> TransitionM v ()
 broadcast msg = do
+  selfNodeId <- asks configNodeId
   action <-
     Broadcast
-      <$> asks configNodeIds
+      <$> asks (Set.filter (selfNodeId /=) . configNodeIds)
       <*> toRPCMessage msg
   tell [action]
 
@@ -114,10 +118,85 @@ send nodeId msg = do
   action <- SendMessage nodeId <$> toRPCMessage msg
   tell [action]
 
-resetElectionTimer :: TransitionM v ()
-resetElectionTimer = tell [ResetElectionTimeout]
-
-incrementTerm :: TransitionM v ()
+incrementTerm :: TransitionM v Term
 incrementTerm = do
+  psNextTerm <- gets (incrTerm . psCurrentTerm)
   modify $ \pstate ->
-    pstate { psCurrentTerm = incrTerm (psCurrentTerm pstate) }
+    pstate { psCurrentTerm = psNextTerm }
+  pure psNextTerm
+
+-- | Resets the election timeout.
+resetElectionTimeout :: TransitionM a ()
+resetElectionTimeout = do
+    t <- asks configElectionTimeout
+    tell [ResetElectionTimeout t]
+
+resetHeartbeatTimeout :: TransitionM a ()
+resetHeartbeatTimeout = do
+    t <- asks configElectionHeartbeat
+    tell [ResetElectionTimeout t]
+
+hasMajority :: Set a -> Set b -> Bool
+hasMajority totalNodeIds votes =
+  Set.size votes >= Set.size totalNodeIds `div` 2 + 1
+
+updateElectionTimeoutCandidateState :: Index -> Index -> TransitionM v CandidateState
+updateElectionTimeoutCandidateState commitIndex lastApplied = do
+  -- State modifications
+  incrementTerm
+  voteForSelf
+  -- Actions to perform
+  resetElectionTimeout
+  broadcast =<< requestVoteMessage
+  selfNodeId <- asks configNodeId
+
+  -- Return new candidate state
+  pure CandidateState
+    { csCommitIndex = commitIndex
+    , csLastApplied = lastApplied
+    , csVotes = Set.singleton selfNodeId
+    }
+  where
+  requestVoteMessage = do
+    term <- gets psCurrentTerm
+    selfNodeId <- asks configNodeId
+    (logEntryIndex, logEntryTerm) <-
+      lastLogEntryIndexAndTerm <$> gets psLog
+    pure RequestVote
+      { rvTerm = term
+      , rvCandidateId = selfNodeId
+      , rvLastLogIndex = logEntryIndex
+      , rvLastLogTerm = logEntryTerm
+      }
+
+  voteForSelf = do
+    selfNodeId <- asks configNodeId
+    modify $ \pstate ->
+      pstate { psVotedFor = Just selfNodeId }
+
+leaderStepUp :: forall v. Index -> Index -> TransitionM v LeaderState
+leaderStepUp commitIndex lastApplied = do
+  resetHeartbeatTimeout
+  selfNodeId <- asks configNodeId
+  currentTerm <- gets psCurrentTerm
+  (logEntryIndex, logEntryTerm) <-
+    lastLogEntryIndexAndTerm <$> gets psLog
+  broadcast AppendEntries { aeTerm = currentTerm
+                          , aeLeaderId = selfNodeId
+                          , aePrevLogIndex = logEntryIndex
+                          , aePrevLogTerm = logEntryTerm
+                          , aeEntries = Seq.Empty :: Seq.Seq (Entry v)
+                          , aeLeaderCommit = index0
+                          }
+
+  cNodeIds <- asks configNodeIds
+  pure LeaderState
+          { lsCommitIndex = commitIndex
+          , lsLastApplied = lastApplied
+          , lsNextIndex = Map.fromList $
+              flip (,) (incrIndex logEntryIndex) <$> Set.toList cNodeIds
+          , lsMatchIndex = Map.fromList $
+              flip (,) index0 <$> Set.toList cNodeIds
+          -- ^ We use index0 as the new leader doesn't know yet what
+          -- the highest log has been seen by other nodes
+          }

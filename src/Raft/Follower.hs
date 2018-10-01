@@ -129,38 +129,6 @@ handleRequestVoteResponse (NodeFollowerState fs) _ _  =
 handleTimeout :: TimeoutHandler 'Follower v
 handleTimeout (NodeFollowerState fs) timeout =
   case timeout of
-    ElectionTimeout -> do
-      -- State modifications
-      incrementTerm
-      voteForSelf
-      -- Actions to perform
-      resetElectionTimer
-      broadcast =<< requestVoteMessage
-      selfNodeId <- asks configNodeId
-      -- Return new candidate state
-      pure $ candidateResultState StartElection $
-        CandidateState
-          { csCommitIndex = fsCommitIndex fs
-          , csLastApplied = fsLastApplied fs
-          , csVotes = singleton selfNodeId
-          }
-  where
-    requestVoteMessage = do
-      term <- gets psCurrentTerm
-      candidateId <- asks configNodeId
-      (logEntryIndex, logEntryTerm) <- do
-        lastEntry <- lastLogEntry <$> gets psLog
-        pure $ case lastEntry of
-          Nothing -> (index0, term0)
-          Just entry -> (entryIndex entry, entryTerm entry)
-      pure RequestVote
-        { rvTerm = term
-        , rvCandidateId = candidateId
-        , rvLastLogIndex = logEntryIndex
-        , rvLastLogTerm = logEntryTerm
-        }
-
-    voteForSelf = do
-      selfNodeId <- asks configNodeId
-      modify $ \pstate ->
-        pstate { psVotedFor = Just selfNodeId }
+    ElectionTimeout ->
+      candidateResultState StartElection <$>
+        updateElectionTimeoutCandidateState (fsCommitIndex fs) (fsLastApplied fs)
