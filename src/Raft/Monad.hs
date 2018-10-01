@@ -14,6 +14,7 @@ import Protolude
 import Control.Monad.RWS
 import qualified Data.Set as Set
 import qualified Data.Map as Map
+import qualified Data.Sequence as Seq
 
 import Raft.Types
 
@@ -184,7 +185,7 @@ leaderStepUp commitIndex lastApplied = do
                           , aeLeaderId = selfNodeId
                           , aePrevLogIndex = logEntryIndex
                           , aePrevLogTerm = logEntryTerm
-                          , aeEntries = [] :: [Entry v]
+                          , aeEntries = Seq.Empty :: Seq.Seq (Entry v)
                           , aeLeaderCommit = index0
                           }
 
@@ -199,5 +200,3 @@ leaderStepUp commitIndex lastApplied = do
           -- ^ We use index0 as the new leader doesn't know yet what
           -- the highest log has been seen by other nodes
           }
-
-
