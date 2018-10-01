@@ -116,9 +116,6 @@ send nodeId msg = do
   action <- SendMessage nodeId <$> toRPCMessage msg
   tell [action]
 
-resetElectionTimer :: TransitionM v ()
-resetElectionTimer = tell [ResetElectionTimeout]
-
 incrementTerm :: TransitionM v ()
 incrementTerm = do
   modify $ \pstate ->

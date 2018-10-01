@@ -50,7 +50,7 @@ handleTimeout (NodeFollowerState fs) timeout =
       incrementTerm
       voteForSelf
       -- Actions to perform
-      resetElectionTimer
+      resetElectionTimeout
       broadcast =<< requestVoteMessage
       selfNodeId <- asks configNodeId
       -- Return new candidate state
