@@ -61,8 +61,10 @@ data AppendEntryError
   = UnexpectedLogIndex Index Index
   deriving (Show)
 
+type Entries v = Seq (Entry v)
+
 -- | The replicated log of entries on each node
-newtype Log v = Log (Seq (Entry v))
+newtype Log v = Log (Entries v)
 
 -- | Append a log entry to the log. Checks if the log is the correct index
 appendLogEntry :: Log v -> Entry v -> Either AppendEntryError (Log v)
@@ -133,7 +135,9 @@ data PersistentState v = PersistentState
 
 data Timeout
   = ElectionTimeout
-  | HearbeatTimeout
+    -- ^ Timeout in which a follower will become candidate
+  | HeartbeatTimeout
+    -- ^ Timeout in which a leader will send AppendEntries RPC to all followers
 
 data Event v
   = Message (Message v)

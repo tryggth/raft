@@ -29,12 +29,6 @@ handleAppendEntries (NodeCandidateState candidateState@CandidateState{..}) sende
     then stepDown sender aeTerm csCommitIndex csLastApplied
     else pure $ candidateResultState Noop candidateState
 
-stepDown :: NodeId -> Term -> Index -> Index -> TransitionM a (ResultState 'Candidate v)
-stepDown sender term commitIndex lastApplied = do
-  resetElectionTimeout
-  send sender (RequestVoteResponse term True)
-  pure $ ResultState DiscoverLeader (NodeFollowerState (FollowerState commitIndex lastApplied))
-
 -- | Candidates should not respond to 'AppendEntriesResponse' messages.
 handleAppendEntriesResponse :: RPCHandler 'Candidate AppendEntriesResponse v
 handleAppendEntriesResponse (NodeCandidateState candidateState) _sender _appendEntriesResp =
@@ -69,10 +63,21 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
 handleTimeout :: TimeoutHandler 'Candidate v
 handleTimeout (NodeCandidateState candidateState@CandidateState{..}) timeout =
   case timeout of
-    HearbeatTimeout -> pure $ candidateResultState Noop candidateState
+    HeartbeatTimeout -> pure $ candidateResultState Noop candidateState
     ElectionTimeout ->
       candidateResultState RestartElection <$>
         updateElectionTimeoutCandidateState csCommitIndex csLastApplied
 
+--------------------------------------------------------------------------------
 
-
+stepDown
+  :: NodeId
+  -> Term
+  -> Index
+  -> Index
+  -> TransitionM a (ResultState 'Candidate v)
+stepDown sender term commitIndex lastApplied = do
+  resetElectionTimeout
+  send sender (RequestVoteResponse term True)
+  pure $ ResultState DiscoverLeader $
+    NodeFollowerState (FollowerState commitIndex lastApplied)

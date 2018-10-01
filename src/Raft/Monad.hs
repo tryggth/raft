@@ -57,6 +57,7 @@ data Transition (init :: Mode) (res :: Mode) where
   DiscoverLeader :: Transition 'Candidate 'Follower
   BecomeLeader :: Transition 'Candidate 'Leader
   DiscoverNewLeader :: Transition 'Leader 'Follower
+  Heartbeat :: Transition 'Leader 'Leader
 
   -- TODO Replace with specific transition names
   Noop :: Transition init init
