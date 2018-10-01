@@ -29,7 +29,7 @@ incrTerm :: Term -> Term
 incrTerm = succ
 
 newtype Index = Index Natural
-  deriving (Eq, Ord, Enum, Num, Integral, Real)
+  deriving (Show, Eq, Ord, Enum, Num, Integral, Real)
 
 index0 :: Index
 index0 = Index 0
@@ -57,24 +57,45 @@ data Entry v = Entry
     -- ^ command to update state machine
   }
 
--- | The replicated log of entries on each node
-newtype Log v = Log { logEntries :: Seq (Entry v) }
+data AppendEntryError
+  = UnexpectedLogIndex Index Index
+  deriving (Show)
 
-addLogEntry :: Log v -> Entry v -> Log v
-addLogEntry (Log es) e = Log (e <| es)
+-- | The replicated log of entries on each node
+newtype Log v = Log (Seq (Entry v))
+
+-- | Append a log entry to the log. Checks if the log is the correct index
+appendLogEntry :: Log v -> Entry v -> Either AppendEntryError (Log v)
+appendLogEntry (Log logEntries) newEntry =
+    case logEntries of
+      Empty
+        | newEntryIndex == 0 -> Right newLog
+        | otherwise -> Left (UnexpectedLogIndex newEntryIndex 0)
+      entry :<| entries
+        | newEntryIndex == entryIndex entry + 1 -> Right newLog
+        | otherwise -> Left (UnexpectedLogIndex newEntryIndex (entryIndex entry + 1))
+  where
+    newEntryIndex = entryIndex newEntry
+    newLog = Log (newEntry <| logEntries)
+
+-- | Append a sequence of log entries to the log. The log entries must be in
+-- descending order with respect to the log entry indices.
+appendLogEntries :: Log v -> Seq (Entry v) -> Either AppendEntryError (Log v)
+appendLogEntries = foldrM (flip appendLogEntry)
 
 lookupLogEntry :: Index -> Log v -> Maybe (Entry v)
 lookupLogEntry idx (Log log) =
   Seq.lookup (fromIntegral idx) log
 
 lastLogEntry :: Log v -> Maybe (Index, Entry v)
-lastLogEntry (Log entries) =
-  case entries of
-    Empty -> Nothing
-    e :<| _ ->
-      -- TODO: Think about what index we want to use
-      let logIndex = fromIntegral (Seq.length entries - 1)
-       in Just (Index logIndex, e)
+lastLogEntry (Log entries) = do
+  e <- lastEntry entries
+  let logIndex = fromIntegral (Seq.length entries - 1)
+  pure (Index logIndex, e)
+
+lastEntry :: Seq (Entry v) -> Maybe (Entry v)
+lastEntry Empty = Nothing
+lastEntry (e :<| _) = Just e
 
 -- | Get the last log entry index and term
 lastLogEntryIndexAndTerm :: Log v -> (Index, Term)
@@ -200,7 +221,7 @@ data AppendEntries v = AppendEntries
     -- ^ index of log entry immediately preceding new ones
   , aePrevLogTerm :: Term
     -- ^ term of aePrevLogIndex entry
-  , aeEntries :: [Entry v]
+  , aeEntries :: Seq (Entry v)
     -- ^ log entries to store (empty for heartbeat)
   , aeLeaderCommit :: Index
     -- ^ leader's commit index
