@@ -14,7 +14,6 @@ import Protolude
 import Control.Monad.RWS
 import qualified Data.Set as Set
 import qualified Data.Map as Map
-import qualified Data.Sequence as Seq
 
 import Raft.Types
 
@@ -134,8 +133,8 @@ resetElectionTimeout = do
 
 resetHeartbeatTimeout :: TransitionM a ()
 resetHeartbeatTimeout = do
-    t <- asks configElectionHeartbeat
-    tell [ResetElectionTimeout t]
+    t <- asks configHeartbeatTimeout
+    tell [ResetHeartbeatTimeout t]
 
 hasMajority :: Set a -> Set b -> Bool
 hasMajority totalNodeIds votes =
@@ -174,30 +173,3 @@ updateElectionTimeoutCandidateState commitIndex lastApplied = do
     selfNodeId <- asks configNodeId
     modify $ \pstate ->
       pstate { psVotedFor = Just selfNodeId }
-
-leaderStepUp :: forall v. Index -> Index -> TransitionM v LeaderState
-leaderStepUp commitIndex lastApplied = do
-  resetHeartbeatTimeout
-  selfNodeId <- asks configNodeId
-  currentTerm <- gets psCurrentTerm
-  (logEntryIndex, logEntryTerm) <-
-    lastLogEntryIndexAndTerm <$> gets psLog
-  broadcast AppendEntries { aeTerm = currentTerm
-                          , aeLeaderId = selfNodeId
-                          , aePrevLogIndex = logEntryIndex
-                          , aePrevLogTerm = logEntryTerm
-                          , aeEntries = Seq.Empty :: Seq.Seq (Entry v)
-                          , aeLeaderCommit = index0
-                          }
-
-  cNodeIds <- asks configNodeIds
-  pure LeaderState
-          { lsCommitIndex = commitIndex
-          , lsLastApplied = lastApplied
-          , lsNextIndex = Map.fromList $
-              flip (,) (incrIndex logEntryIndex) <$> Set.toList cNodeIds
-          , lsMatchIndex = Map.fromList $
-              flip (,) index0 <$> Set.toList cNodeIds
-          -- ^ We use index0 as the new leader doesn't know yet what
-          -- the highest log has been seen by other nodes
-          }

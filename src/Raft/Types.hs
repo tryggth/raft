@@ -44,7 +44,7 @@ data NodeConfig = NodeConfig
   { configNodeId :: NodeId
   , configNodeIds :: NodeIds
   , configElectionTimeout :: Int
-  , configElectionHeartbeat :: Int
+  , configHeartbeatTimeout :: Int
   }
 
 -- | An entry in the replicated log

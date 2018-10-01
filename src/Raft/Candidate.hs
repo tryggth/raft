@@ -7,12 +7,14 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE TupleSections #-}
 
 module Raft.Candidate where
 
 import Protolude
-import Control.Monad.RWS
 import qualified Data.Set as Set
+import qualified Data.Map as Map
+import qualified Data.Sequence as Seq
 
 import Raft.Monad
 import Raft.Types
@@ -45,7 +47,7 @@ handleRequestVote ((NodeCandidateState candidateState@CandidateState{..})) sende
       pure $ candidateResultState Noop candidateState
 
 -- | Candidates should not respond to 'RequestVoteResponse' messages.
-handleRequestVoteResponse :: RPCHandler 'Candidate RequestVoteResponse v
+handleRequestVoteResponse :: forall v. RPCHandler 'Candidate RequestVoteResponse v
 handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..}) sender requestVoteResp@RequestVoteResponse{..} = do
   currentTerm <- gets psCurrentTerm
   cNodeIds <- asks configNodeIds
@@ -58,7 +60,35 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
 
           if not $ hasMajority cNodeIds newCsVotes
             then pure $ candidateResultState Noop candidateState
-            else leaderResultState BecomeLeader <$> leaderStepUp csCommitIndex csLastApplied
+            else leaderResultState BecomeLeader <$> becomeLeader csCommitIndex csLastApplied
+
+  where
+    becomeLeader :: Index -> Index -> TransitionM v LeaderState
+    becomeLeader commitIndex lastApplied = do
+      resetHeartbeatTimeout
+      selfNodeId <- asks configNodeId
+      currentTerm <- gets psCurrentTerm
+      (logEntryIndex, logEntryTerm) <-
+        lastLogEntryIndexAndTerm <$> gets psLog
+      broadcast AppendEntries { aeTerm = currentTerm
+                              , aeLeaderId = selfNodeId
+                              , aePrevLogIndex = logEntryIndex
+                              , aePrevLogTerm = logEntryTerm
+                              , aeEntries = Seq.Empty :: Seq.Seq (Entry v)
+                              , aeLeaderCommit = index0
+                              }
+
+      cNodeIds <- asks configNodeIds
+      pure LeaderState
+              { lsCommitIndex = commitIndex
+              , lsLastApplied = lastApplied
+              , lsNextIndex = Map.fromList $
+                  (,incrIndex logEntryIndex) <$> Set.toList cNodeIds
+              , lsMatchIndex = Map.fromList $
+                  (,index0) <$> Set.toList cNodeIds
+              -- ^ We use index0 as the new leader doesn't know yet what
+              -- the highest log has been seen by other nodes
+              }
 
 handleTimeout :: TimeoutHandler 'Candidate v
 handleTimeout (NodeCandidateState candidateState@CandidateState{..}) timeout =
