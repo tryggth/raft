@@ -16,13 +16,6 @@ import Raft.Types
 -- Candidate
 --------------------------------------------------------------------------------
 
-instance RaftHandler Candidate v where
-  handleAppendEntries = Raft.Candidate.handleAppendEntries
-  handleAppendEntriesResponse = Raft.Candidate.handleAppendEntriesResponse
-  handleRequestVote = Raft.Candidate.handleRequestVote
-  handleRequestVoteResponse = Raft.Candidate.handleRequestVoteResponse
-  handleTimeout = Raft.Candidate.handleTimeout
-
 handleAppendEntries :: RPCHandler 'Candidate (AppendEntries v) v
 handleAppendEntries = undefined
 
