@@ -118,6 +118,11 @@ send nodeId msg = do
   action <- SendMessage nodeId <$> toRPCMessage msg
   tell [action]
 
+uniqueBroadcast :: RPCType r v => Map NodeId r -> TransitionM v ()
+uniqueBroadcast msgs = do
+  action <- SendMessages <$> mapM toRPCMessage msgs
+  tell [action]
+
 incrementTerm :: TransitionM v Term
 incrementTerm = do
   psNextTerm <- gets (incrTerm . psCurrentTerm)

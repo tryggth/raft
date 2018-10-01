@@ -105,6 +105,10 @@ lastLogEntryIndexAndTerm log =
     Nothing -> (index0, term0)
     Just entry -> (entryIndex entry, entryTerm entry)
 
+takeLogEntriesUntil :: Log v -> Index -> Entries v
+takeLogEntriesUntil (Log log) idx =
+  Seq.takeWhileL ((<=) idx . entryIndex) log
+
 dropLogEntriesUntil :: Log v -> Index -> Log v
 dropLogEntriesUntil (Log log) idx =
   Log (Seq.dropWhileL ((<=) idx . entryIndex) log)
@@ -149,9 +153,15 @@ data Event v
 
 data Action v
   = SendMessage NodeId (Message v)
+    -- ^ Send a message to a specific node id
+  | SendMessages (Map NodeId (Message v))
+    -- ^ Send a unique message to specific nodes in parallel
   | Broadcast NodeIds (Message v)
+    -- ^ Broadcast the same message to all nodes
   | ResetElectionTimeout Int
+    -- ^ Reset the election timeout timer
   | ResetHeartbeatTimeout Int
+    -- ^ Reset the heartbeat timeout timer
 
 --------------------------------------------------------------------------------
 -- Node States
