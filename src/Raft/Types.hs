@@ -49,7 +49,8 @@ data NodeConfig = NodeConfig
 
 -- | An entry in the replicated log
 data Entry v = Entry
-  { entryTerm :: Term
+  { entryIndex :: Index
+  , entryTerm :: Term
     -- ^ term when entry was received by leader
   , entryValue :: v
     -- ^ command to update state machine
@@ -88,7 +89,9 @@ data PersistentState v = PersistentState
 -- Events
 --------------------------------------------------------------------------------
 
-data Timeout = ElectionTimeout
+data Timeout
+  = ElectionTimeout
+  | HearbeatTimeout
 
 data Event v
   = Message (Message v)

@@ -54,7 +54,7 @@ handleRequestVote (currentState@(NodeCandidateState CandidateState{..})) sender 
 handleRequestVoteResponse :: RPCHandler 'Candidate RequestVoteResponse v
 handleRequestVoteResponse (currentState@(NodeCandidateState CandidateState{..})) sender requestVoteResp@RequestVoteResponse{..} = do
   currentTerm <- gets psCurrentTerm
-  nodeIds <- asks configNodeIds
+  cNodeIds <- asks configNodeIds
   if  | rvrTerm < currentTerm -> pure $ ResultState Noop currentState
       | rvrTerm > currentTerm -> stepDown sender rvrTerm csCommitIndex csLastApplied
       | not rvrVoteGranted -> pure $ ResultState Noop currentState
@@ -62,11 +62,20 @@ handleRequestVoteResponse (currentState@(NodeCandidateState CandidateState{..}))
       | otherwise -> do
           let newCsVotes = Set.insert sender csVotes
 
-          if (not $ hasMajority nodeIds newCsVotes)
+          if not $ hasMajority cNodeIds newCsVotes
             then pure $ ResultState Noop currentState
             else notImplemented -- TODO: Stepup
 
 
 handleTimeout :: TimeoutHandler 'Candidate v
-handleTimeout fs timeout = undefined
+handleTimeout (currentState@(NodeCandidateState CandidateState{..})) timeout =
+  case timeout of
+    HearbeatTimeout -> pure $ ResultState Noop currentState
+    ElectionTimeout -> do
+      resetElectionTimeout
+      cNodeId <- asks configNodeId
+      csNextTerm <- gets (incrTerm . psCurrentTerm)
+
+      pure $ ResultState Noop currentState
+
 
