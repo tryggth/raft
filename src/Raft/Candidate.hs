@@ -23,11 +23,11 @@ import Raft.Follower
 --------------------------------------------------------------------------------
 
 handleAppendEntries :: RPCHandler 'Candidate (AppendEntries v) v
-handleAppendEntries (currentState@(NodeCandidateState CandidateState{..})) sender AppendEntries {..} = do
+handleAppendEntries (NodeCandidateState candidateState@CandidateState{..}) sender AppendEntries {..} = do
   currentTerm <- gets psCurrentTerm
   if currentTerm <= aeTerm
     then stepDown sender aeTerm csCommitIndex csLastApplied
-    else pure $ ResultState Noop currentState
+    else pure $ candidateResultState Noop candidateState
 
 stepDown :: NodeId -> Term -> Index -> Index -> TransitionM a (ResultState 'Candidate v)
 stepDown sender term commitIndex lastApplied = do
@@ -37,40 +37,40 @@ stepDown sender term commitIndex lastApplied = do
 
 -- | Candidates should not respond to 'AppendEntriesResponse' messages.
 handleAppendEntriesResponse :: RPCHandler 'Candidate AppendEntriesResponse v
-handleAppendEntriesResponse currentState _sender _appendEntriesResp =
-  pure $ ResultState Noop currentState
+handleAppendEntriesResponse (NodeCandidateState candidateState) _sender _appendEntriesResp =
+  pure $ candidateResultState Noop candidateState
 
 
 handleRequestVote :: RPCHandler 'Candidate RequestVote v
-handleRequestVote (currentState@(NodeCandidateState CandidateState{..})) sender requestVote@RequestVote{..} = do
+handleRequestVote ((NodeCandidateState candidateState@CandidateState{..})) sender requestVote@RequestVote{..} = do
   currentTerm <- gets psCurrentTerm
   if rvTerm > currentTerm
     then stepDown sender rvTerm csCommitIndex csLastApplied
     else do
       send sender (RequestVoteResponse currentTerm False)
-      pure $ ResultState Noop currentState
+      pure $ candidateResultState Noop candidateState
 
 -- | Candidates should not respond to 'RequestVoteResponse' messages.
 handleRequestVoteResponse :: RPCHandler 'Candidate RequestVoteResponse v
-handleRequestVoteResponse (currentState@(NodeCandidateState CandidateState{..})) sender requestVoteResp@RequestVoteResponse{..} = do
+handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..}) sender requestVoteResp@RequestVoteResponse{..} = do
   currentTerm <- gets psCurrentTerm
   cNodeIds <- asks configNodeIds
-  if  | rvrTerm < currentTerm -> pure $ ResultState Noop currentState
+  if  | rvrTerm < currentTerm -> pure $ candidateResultState Noop candidateState
       | rvrTerm > currentTerm -> stepDown sender rvrTerm csCommitIndex csLastApplied
-      | not rvrVoteGranted -> pure $ ResultState Noop currentState
-      | Set.member sender csVotes -> pure $ ResultState Noop currentState
+      | not rvrVoteGranted -> pure $ candidateResultState Noop candidateState
+      | Set.member sender csVotes -> pure $ candidateResultState Noop candidateState
       | otherwise -> do
           let newCsVotes = Set.insert sender csVotes
 
           if not $ hasMajority cNodeIds newCsVotes
-            then pure $ ResultState Noop currentState
+            then pure $ candidateResultState Noop candidateState
             else notImplemented -- TODO: Stepup
 
 
 handleTimeout :: TimeoutHandler 'Candidate v
-handleTimeout (currentState@(NodeCandidateState CandidateState{..})) timeout =
+handleTimeout (NodeCandidateState candidateState@CandidateState{..}) timeout =
   case timeout of
-    HearbeatTimeout -> pure $ ResultState Noop currentState
+    HearbeatTimeout -> pure $ candidateResultState Noop candidateState
     ElectionTimeout ->
       candidateResultState RestartElection <$>
         updateElectionTimeoutCandidateState csCommitIndex csLastApplied
