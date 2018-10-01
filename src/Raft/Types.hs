@@ -72,6 +72,7 @@ lastLogEntry (Log entries) =
   case entries of
     Empty -> Nothing
     e :<| _ ->
+      -- TODO: Think about what index we want to use
       let logIndex = fromIntegral (Seq.length entries - 1)
        in Just (Index logIndex, e)
 
@@ -79,6 +80,8 @@ lastLogEntry (Log entries) =
 lastLogEntryIndexAndTerm :: Log v -> (Index, Term)
 lastLogEntryIndexAndTerm log =
   case lastLogEntry log of
+    -- TODO: Is term0 the default term when there are no logs?
+    -- If we store a log for each new election, then the default term can be 0
     Nothing -> (index0, term0)
     Just le -> second entryTerm le
 
@@ -126,6 +129,7 @@ data Action v
   = SendMessage NodeId (Message v)
   | Broadcast NodeIds (Message v)
   | ResetElectionTimeout Int
+  | ResetHeartbeatTimeout Int
 
 --------------------------------------------------------------------------------
 -- Node States

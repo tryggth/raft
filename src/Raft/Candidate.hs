@@ -64,8 +64,7 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
 
           if not $ hasMajority cNodeIds newCsVotes
             then pure $ candidateResultState Noop candidateState
-            else notImplemented -- TODO: Stepup
-
+            else leaderResultState BecomeLeader <$> leaderStepUp csCommitIndex csLastApplied
 
 handleTimeout :: TimeoutHandler 'Candidate v
 handleTimeout (NodeCandidateState candidateState@CandidateState{..}) timeout =
