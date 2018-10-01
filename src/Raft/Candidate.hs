@@ -71,11 +71,9 @@ handleTimeout :: TimeoutHandler 'Candidate v
 handleTimeout (currentState@(NodeCandidateState CandidateState{..})) timeout =
   case timeout of
     HearbeatTimeout -> pure $ ResultState Noop currentState
-    ElectionTimeout -> do
-      resetElectionTimeout
-      cNodeId <- asks configNodeId
-      csNextTerm <- gets (incrTerm . psCurrentTerm)
+    ElectionTimeout ->
+      candidateResultState RestartElection <$>
+        updateElectionTimeoutCandidateState csCommitIndex csLastApplied
 
-      pure $ ResultState Noop currentState
 
 

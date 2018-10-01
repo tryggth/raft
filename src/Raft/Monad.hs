@@ -116,10 +116,12 @@ send nodeId msg = do
   action <- SendMessage nodeId <$> toRPCMessage msg
   tell [action]
 
-incrementTerm :: TransitionM v ()
+incrementTerm :: TransitionM v Term
 incrementTerm = do
+  psNextTerm <- gets (incrTerm . psCurrentTerm)
   modify $ \pstate ->
-    pstate { psCurrentTerm = incrTerm (psCurrentTerm pstate) }
+    pstate { psCurrentTerm = psNextTerm }
+  pure psNextTerm
 
 -- | Resets the election timeout.
 resetElectionTimeout :: TransitionM a ()
@@ -131,4 +133,36 @@ hasMajority :: Set a -> Set b -> Bool
 hasMajority totalNodeIds votes =
   Set.size votes >= Set.size totalNodeIds `div` 2 + 1
 
+updateElectionTimeoutCandidateState :: Index -> Index -> TransitionM v CandidateState
+updateElectionTimeoutCandidateState commitIndex lastApplied = do
+  -- State modifications
+  incrementTerm
+  voteForSelf
+  -- Actions to perform
+  resetElectionTimeout
+  broadcast =<< requestVoteMessage
+  selfNodeId <- asks configNodeId
 
+  -- Return new candidate state
+  pure CandidateState
+    { csCommitIndex = commitIndex
+    , csLastApplied = lastApplied
+    , csVotes = Set.singleton selfNodeId
+    }
+  where
+  requestVoteMessage = do
+    term <- gets psCurrentTerm
+    selfNodeId <- asks configNodeId
+    (logEntryIndex, logEntryTerm) <-
+      lastLogEntryIndexAndTerm <$> gets psLog
+    pure RequestVote
+      { rvTerm = term
+      , rvCandidateId = selfNodeId
+      , rvLastLogIndex = logEntryIndex
+      , rvLastLogTerm = logEntryTerm
+      }
+
+  voteForSelf = do
+    selfNodeId <- asks configNodeId
+    modify $ \pstate ->
+      pstate { psVotedFor = Just selfNodeId }
