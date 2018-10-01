@@ -101,6 +101,8 @@ lastEntry (e :<| _) = Just e
 lastLogEntryIndexAndTerm :: Log v -> (Index, Term)
 lastLogEntryIndexAndTerm log =
   case lastLogEntry log of
+    -- TODO: Is term0 the default term when there are no logs?
+    -- If we store a log for each new election, then the default term can be 0
     Nothing -> (index0, term0)
     Just le -> second entryTerm le
 
@@ -132,7 +134,9 @@ data PersistentState v = PersistentState
 -- Events
 --------------------------------------------------------------------------------
 
-data Timeout = ElectionTimeout
+data Timeout
+  = ElectionTimeout
+  | HearbeatTimeout
 
 data Event v
   = Message (Message v)
@@ -145,7 +149,8 @@ data Event v
 data Action v
   = SendMessage NodeId (Message v)
   | Broadcast NodeIds (Message v)
-  | ResetElectionTimeout
+  | ResetElectionTimeout Int
+  | ResetHeartbeatTimeout Int
 
 --------------------------------------------------------------------------------
 -- Node States
