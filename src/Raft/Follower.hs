@@ -115,8 +115,10 @@ handleRequestVote (NodeFollowerState fs) sender RequestVote{..} = do
     -- Check if the requesting candidate's log is more up to date
     -- Section 5.4.1 in Raft Paper
     validCandidateLog log =
-      let (idx, term) = lastLogEntryIndexAndTerm log
-       in term < rvLastLogTerm && idx < rvLastLogIndex
+      case lastLogEntry log of
+        Nothing -> True
+        Just (Entry idx term _) ->
+          term < rvLastLogTerm && idx < rvLastLogIndex
 
 -- | Followers should not respond to 'RequestVoteResponse' messages.
 handleRequestVoteResponse :: RPCHandler 'Follower RequestVoteResponse v
@@ -146,8 +148,11 @@ handleTimeout (NodeFollowerState fs) timeout =
     requestVoteMessage = do
       term <- gets psCurrentTerm
       candidateId <- asks configNodeId
-      (logEntryIndex, logEntryTerm) <-
-        lastLogEntryIndexAndTerm <$> gets psLog
+      (logEntryIndex, logEntryTerm) <- do
+        lastEntry <- lastLogEntry <$> gets psLog
+        pure $ case lastEntry of
+          Nothing -> (index0, term0)
+          Just entry -> (entryIndex entry, entryTerm entry)
       pure RequestVote
         { rvTerm = term
         , rvCandidateId = candidateId
