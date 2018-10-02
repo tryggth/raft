@@ -9,16 +9,25 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE TupleSections #-}
 
-module Raft.Candidate where
+module Raft.Candidate (
+    handleAppendEntries
+  , handleAppendEntriesResponse
+  , handleRequestVote
+  , handleRequestVoteResponse
+  , handleTimeout
+  , handleClientRequest
+) where
 
 import Protolude
+
+import Control.Monad.Writer (tell)
+
 import qualified Data.Set as Set
 import qualified Data.Map as Map
 import qualified Data.Sequence as Seq
 
 import Raft.Monad
 import Raft.Types
-import Raft.Follower
 
 --------------------------------------------------------------------------------
 -- Candidate
@@ -63,6 +72,10 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
             else leaderResultState BecomeLeader <$> becomeLeader csCommitIndex csLastApplied
 
   where
+    hasMajority :: Set a -> Set b -> Bool
+    hasMajority totalNodeIds votes =
+      Set.size votes >= Set.size totalNodeIds `div` 2 + 1
+
     becomeLeader :: Index -> Index -> TransitionM v LeaderState
     becomeLeader commitIndex lastApplied = do
       resetHeartbeatTimeout
@@ -71,7 +84,7 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
       (logEntryIndex, logEntryTerm) <-
         lastLogEntryIndexAndTerm <$> gets psLog
       broadcast AppendEntries { aeTerm = currentTerm
-                              , aeLeaderId = selfNodeId
+                              , aeLeaderId = LeaderId selfNodeId
                               , aePrevLogIndex = logEntryIndex
                               , aePrevLogTerm = logEntryTerm
                               , aeEntries = Seq.Empty :: Seq.Seq (Entry v)
@@ -98,6 +111,15 @@ handleTimeout (NodeCandidateState candidateState@CandidateState{..}) timeout =
       candidateResultState RestartElection <$>
         updateElectionTimeoutCandidateState csCommitIndex csLastApplied
 
+-- | When candidates handle a client request, they respond with NoLeader, as the
+-- very reason they are candidate is because there is no leader. This is done
+-- instead of simply not responding such that the client can know that the node
+-- is live but that there is an election taking place.
+handleClientRequest :: ClientReqHandler 'Candidate v
+handleClientRequest (NodeCandidateState candidateState) (ClientReq clientId _) = do
+  tell [RedirectClient clientId NoLeader]
+  pure (candidateResultState Noop candidateState)
+
 --------------------------------------------------------------------------------
 
 stepDown
@@ -110,4 +132,8 @@ stepDown sender term commitIndex lastApplied = do
   resetElectionTimeout
   send sender (RequestVoteResponse term True)
   pure $ ResultState DiscoverLeader $
-    NodeFollowerState (FollowerState commitIndex lastApplied)
+    NodeFollowerState FollowerState
+      { fsCurrentLeader = CurrentLeader (LeaderId sender)
+      , fsCommitIndex = commitIndex
+      , fsLastApplied = lastApplied
+      }

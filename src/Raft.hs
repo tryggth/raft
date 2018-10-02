@@ -44,6 +44,7 @@ data RaftHandler s v = RaftHandler
   , handleRequestVote :: RPCHandler s RequestVote v
   , handleRequestVoteResponse :: RPCHandler s RequestVoteResponse v
   , handleTimeout :: TimeoutHandler s v
+  , handleClientRequest :: ClientReqHandler s v
   }
 
 followerRaftHandler :: RaftHandler 'Follower v
@@ -53,6 +54,7 @@ followerRaftHandler = RaftHandler
   , handleRequestVote = Follower.handleRequestVote
   , handleRequestVoteResponse = Follower.handleRequestVoteResponse
   , handleTimeout = Follower.handleTimeout
+  , handleClientRequest = Follower.handleClientRequest
   }
 
 candidateRaftHandler :: RaftHandler 'Candidate v
@@ -62,6 +64,7 @@ candidateRaftHandler = RaftHandler
   , handleRequestVote = Candidate.handleRequestVote
   , handleRequestVoteResponse = Candidate.handleRequestVoteResponse
   , handleTimeout = Candidate.handleTimeout
+  , handleClientRequest = Candidate.handleClientRequest
   }
 
 leaderRaftHandler :: RaftHandler 'Leader v
@@ -71,6 +74,7 @@ leaderRaftHandler = RaftHandler
   , handleRequestVote = Leader.handleRequestVote
   , handleRequestVoteResponse = Leader.handleRequestVoteResponse
   , handleTimeout = Leader.handleTimeout
+  , handleClientRequest = Leader.handleClientRequest
   }
 
 handleEvent'
@@ -84,6 +88,7 @@ handleEvent' RaftHandler{..} nodeConfig nodeState persistentState event =
     runTransitionM nodeConfig persistentState $
       case event of
         Message msg -> handleMessage nodeState msg
+        ClientRequest crq -> handleClientRequest nodeState crq
         Timeout tout -> handleTimeout nodeState tout
   where
     handleMessage s (RPC sender rpc) =

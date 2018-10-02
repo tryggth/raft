@@ -7,7 +7,14 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE MonoLocalBinds #-}
 
-module Raft.Leader where
+module Raft.Leader (
+    handleAppendEntries
+  , handleAppendEntriesResponse
+  , handleRequestVote
+  , handleRequestVoteResponse
+  , handleTimeout
+  , handleClientRequest
+) where
 
 import Protolude
 
@@ -70,6 +77,9 @@ handleTimeout (NodeLeaderState ls) timeout =
       uniqueBroadcast =<< appendEntriesRPCs ls
       pure (leaderResultState Heartbeat ls)
 
+handleClientRequest :: ClientReqHandler 'Leader v
+handleClientRequest = undefined
+
 --------------------------------------------------------------------------------
 
 -- | If there exists an N such that N > commitIndex, a majority of
@@ -110,7 +120,7 @@ appendEntriesRPC entries leaderState = do
     lastLogEntryIndexAndTerm <$> gets psLog
   pure AppendEntries
     { aeTerm = term
-    , aeLeaderId = leaderId
+    , aeLeaderId = LeaderId leaderId
     , aePrevLogIndex = prevLogIndex
     , aePrevLogTerm = prevLogTerm
     , aeEntries = entries

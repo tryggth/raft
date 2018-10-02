@@ -39,6 +39,7 @@ runTransitionM nodeConfig persistentState transition =
 
 type RPCHandler s r v = RPCType r v => NodeState s -> NodeId -> r -> TransitionM v (ResultState s v)
 type TimeoutHandler s v = NodeState s -> Timeout -> TransitionM v (ResultState s v)
+type ClientReqHandler s v = NodeState s -> ClientReq v -> TransitionM v (ResultState s v)
 
 --------------------------------------------------------------------------------
 -- Transitions
@@ -123,27 +124,22 @@ uniqueBroadcast msgs = do
   action <- SendMessages <$> mapM toRPCMessage msgs
   tell [action]
 
-incrementTerm :: TransitionM v Term
+incrementTerm :: TransitionM v ()
 incrementTerm = do
   psNextTerm <- gets (incrTerm . psCurrentTerm)
   modify $ \pstate ->
     pstate { psCurrentTerm = psNextTerm }
-  pure psNextTerm
 
 -- | Resets the election timeout.
-resetElectionTimeout :: TransitionM a ()
+resetElectionTimeout :: TransitionM v ()
 resetElectionTimeout = do
-    t <- asks configElectionTimeout
-    tell [ResetElectionTimeout t]
+  t <- asks configElectionTimeout
+  tell [ResetTimeoutTimer ElectionTimeout t]
 
-resetHeartbeatTimeout :: TransitionM a ()
+resetHeartbeatTimeout :: TransitionM v ()
 resetHeartbeatTimeout = do
-    t <- asks configHeartbeatTimeout
-    tell [ResetHeartbeatTimeout t]
-
-hasMajority :: Set a -> Set b -> Bool
-hasMajority totalNodeIds votes =
-  Set.size votes >= Set.size totalNodeIds `div` 2 + 1
+  t <- asks configHeartbeatTimeout
+  tell [ResetTimeoutTimer HeartbeatTimeout t]
 
 updateElectionTimeoutCandidateState :: Index -> Index -> TransitionM v CandidateState
 updateElectionTimeoutCandidateState commitIndex lastApplied = do

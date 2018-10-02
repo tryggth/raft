@@ -137,19 +137,30 @@ data PersistentState v = PersistentState
 -- Events
 --------------------------------------------------------------------------------
 
+newtype ClientId = ClientId NodeId
+newtype LeaderId = LeaderId { unLeaderId :: NodeId }
+
 data Timeout
   = ElectionTimeout
     -- ^ Timeout in which a follower will become candidate
   | HeartbeatTimeout
     -- ^ Timeout in which a leader will send AppendEntries RPC to all followers
 
+data ClientReq v
+  = ClientReq ClientId v
+
 data Event v
   = Message (Message v)
+  | ClientRequest (ClientReq v)
   | Timeout Timeout
 
 --------------------------------------------------------------------------------
 -- Actions (TODO move to src/Raft/Action.hs)
 --------------------------------------------------------------------------------
+
+data CurrentLeader
+  = CurrentLeader LeaderId
+  | NoLeader
 
 data Action v
   = SendMessage NodeId (Message v)
@@ -158,17 +169,23 @@ data Action v
     -- ^ Send a unique message to specific nodes in parallel
   | Broadcast NodeIds (Message v)
     -- ^ Broadcast the same message to all nodes
-  | ResetElectionTimeout Int
-    -- ^ Reset the election timeout timer
-  | ResetHeartbeatTimeout Int
-    -- ^ Reset the heartbeat timeout timer
+  | ApplyLogEntry (Entry v)
+    -- ^ Apply a replicated log entry to state machine
+  | ResetTimeoutTimer Timeout Int
+    -- ^ Reset a timeout timer
+  | RedirectClient ClientId CurrentLeader
+    -- ^ Redirect a client to the current leader
+  | RespondToClient ClientId
+    -- ^ Respond to client after successful command application
 
 --------------------------------------------------------------------------------
 -- Node States
 --------------------------------------------------------------------------------
 
 data FollowerState = FollowerState
-  { fsCommitIndex :: Index
+  { fsCurrentLeader :: CurrentLeader
+    -- ^ The id of the current leader
+  , fsCommitIndex :: Index
     -- ^ index of highest log entry known to be committed
   , fsLastApplied :: Index
     -- ^ index of highest log entry applied to state machine
@@ -226,7 +243,7 @@ instance RPCType (RequestVoteResponse) v where
 data AppendEntries v = AppendEntries
   { aeTerm :: Term
     -- ^ leader's term
-  , aeLeaderId :: NodeId
+  , aeLeaderId :: LeaderId
     -- ^ so follower can redirect clients
   , aePrevLogIndex :: Index
     -- ^ index of log entry immediately preceding new ones
