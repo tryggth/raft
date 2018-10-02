@@ -4,6 +4,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE GADTs #-}
 
 module Raft where
@@ -78,26 +79,93 @@ leaderRaftHandler = RaftHandler
   }
 
 handleEvent'
-  :: RaftHandler s v
+  :: forall s v. RaftHandler s v
   -> NodeConfig
   -> NodeState s
   -> PersistentState v
   -> Event v
   -> (ResultState s v, PersistentState v, [Action v])
-handleEvent' RaftHandler{..} nodeConfig nodeState persistentState event =
+handleEvent' RaftHandler{..} nodeConfig initNodeState persistentState event =
     runTransitionM nodeConfig persistentState $
       case event of
-        Message msg -> handleMessage nodeState msg
-        ClientRequest crq -> handleClientRequest nodeState crq
-        Timeout tout -> handleTimeout nodeState tout
+        Message msg -> handleMessage msg
+        ClientRequest crq -> handleClientRequest initNodeState crq
+        Timeout tout -> handleTimeout initNodeState tout
   where
-    handleMessage s (RPC sender rpc) =
-      case rpc of
-        AppendEntriesRPC appendEntries ->
-          handleAppendEntries s sender appendEntries
-        AppendEntriesResponseRPC appendEntriesResp ->
-          handleAppendEntriesResponse s sender appendEntriesResp
-        RequestVoteRPC requestVote ->
-          handleRequestVote s sender requestVote
-        RequestVoteResponseRPC requestVoteResp ->
-          handleRequestVoteResponse s sender requestVoteResp
+    (lastApplied :: Index, commitIndex :: Index) =
+      case initNodeState of
+        NodeFollowerState fs -> (fsLastApplied fs, fsCommitIndex fs)
+        NodeCandidateState cs -> (csLastApplied cs, csCommitIndex cs)
+        NodeLeaderState ls -> (lsLastApplied ls, lsCommitIndex ls)
+
+    handleMessage :: Message v -> TransitionM v (ResultState s v)
+    handleMessage (RPC sender rpc) = do
+      -- If commitIndex > lastApplied: increment lastApplied, apply
+      -- log[lastApplied] to state machine (Section 5.3)
+      newNodeState <-
+        if (commitIndex > lastApplied)
+          then incrLastApplied
+          else pure initNodeState
+
+      -- If RPC request or response contains ter T > currentTerm: set
+      -- currentTerm = T, convert to follower
+      currentTerm <- gets psCurrentTerm
+      if rpcTerm rpc > currentTerm
+        then do
+          updateTerm (rpcTerm rpc)
+          convertToFollower newNodeState
+        else
+          -- Otherwise handle message normally
+          case rpc of
+            AppendEntriesRPC appendEntries ->
+              handleAppendEntries newNodeState sender appendEntries
+            AppendEntriesResponseRPC appendEntriesResp ->
+              handleAppendEntriesResponse newNodeState sender appendEntriesResp
+            RequestVoteRPC requestVote ->
+              handleRequestVote newNodeState sender requestVote
+            RequestVoteResponseRPC requestVoteResp ->
+              handleRequestVoteResponse newNodeState sender requestVoteResp
+
+    updateTerm :: Term -> TransitionM v ()
+    updateTerm t =
+      modify $ \pstate ->
+        pstate { psCurrentTerm = t }
+
+    convertToFollower :: NodeState s -> TransitionM v (ResultState s v)
+    convertToFollower nodeState = do
+      case nodeState of
+        NodeFollowerState _ ->
+          pure $ ResultState HigherTermFoundFollower nodeState
+        NodeCandidateState cs ->
+          pure $ ResultState HigherTermFoundCandidate $
+            NodeFollowerState FollowerState
+              { fsCurrentLeader = NoLeader
+              , fsCommitIndex = csCommitIndex cs
+              , fsLastApplied = csLastApplied cs
+              }
+        NodeLeaderState ls ->
+          pure $ ResultState HigherTermFoundLeader $
+            NodeFollowerState FollowerState
+              { fsCurrentLeader = NoLeader
+              , fsCommitIndex = lsCommitIndex ls
+              , fsLastApplied = lsLastApplied ls
+              }
+
+    incrLastApplied :: TransitionM v (NodeState s)
+    incrLastApplied =
+      case initNodeState of
+        NodeFollowerState fs -> do
+          let lastApplied = incrIndex (fsLastApplied fs)
+          applyLogEntry lastApplied
+          pure $ NodeFollowerState $
+            fs { fsLastApplied = lastApplied }
+        NodeCandidateState cs -> do
+          let lastApplied = incrIndex (csLastApplied cs)
+          applyLogEntry lastApplied
+          pure $ NodeCandidateState $
+            cs { csLastApplied = lastApplied }
+        NodeLeaderState ls -> do
+          let lastApplied = incrIndex (lsLastApplied ls)
+          applyLogEntry lastApplied
+          pure $ NodeLeaderState $
+            ls { lsLastApplied = lastApplied }

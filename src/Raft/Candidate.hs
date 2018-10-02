@@ -45,7 +45,6 @@ handleAppendEntriesResponse :: RPCHandler 'Candidate AppendEntriesResponse v
 handleAppendEntriesResponse (NodeCandidateState candidateState) _sender _appendEntriesResp =
   pure $ candidateResultState Noop candidateState
 
-
 handleRequestVote :: RPCHandler 'Candidate RequestVote v
 handleRequestVote ((NodeCandidateState candidateState@CandidateState{..})) sender requestVote@RequestVote{..} = do
   currentTerm <- gets psCurrentTerm
@@ -130,7 +129,6 @@ stepDown
   -> TransitionM a (ResultState 'Candidate v)
 stepDown sender term commitIndex lastApplied = do
   resetElectionTimeout
-  send sender (RequestVoteResponse term True)
   pure $ ResultState DiscoverLeader $
     NodeFollowerState FollowerState
       { fsCurrentLeader = CurrentLeader (LeaderId sender)

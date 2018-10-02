@@ -240,6 +240,13 @@ instance RPCType (RequestVote) v where
 instance RPCType (RequestVoteResponse) v where
   toRPC = RequestVoteResponseRPC
 
+rpcTerm :: RPC v -> Term
+rpcTerm = \case
+  AppendEntriesRPC ae -> aeTerm ae
+  AppendEntriesResponseRPC aer -> aerTerm aer
+  RequestVoteRPC rv -> rvTerm rv
+  RequestVoteResponseRPC rvr -> rvrTerm rvr
+
 data AppendEntries v = AppendEntries
   { aeTerm :: Term
     -- ^ leader's term

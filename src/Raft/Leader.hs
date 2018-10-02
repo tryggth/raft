@@ -75,7 +75,7 @@ handleTimeout (NodeLeaderState ls) timeout =
     -- On a heartbeat timeout, broadcast append entries RPC to all peers
     HeartbeatTimeout -> do
       uniqueBroadcast =<< appendEntriesRPCs ls
-      pure (leaderResultState Heartbeat ls)
+      pure (leaderResultState SendHeartbeat ls)
 
 handleClientRequest :: ClientReqHandler 'Leader v
 handleClientRequest = undefined

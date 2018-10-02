@@ -52,12 +52,17 @@ data Mode
 
 -- | All valid state transitions of a Raft node
 data Transition (init :: Mode) (res :: Mode) where
-  StartElection :: Transition 'Follower 'Candidate
-  RestartElection :: Transition 'Candidate 'Candidate
-  DiscoverLeader :: Transition 'Candidate 'Follower
-  BecomeLeader :: Transition 'Candidate 'Leader
-  DiscoverNewLeader :: Transition 'Leader 'Follower
-  Heartbeat :: Transition 'Leader 'Leader
+  StartElection            :: Transition 'Follower 'Candidate
+  HigherTermFoundFollower  :: Transition 'Follower 'Follower
+
+  RestartElection          :: Transition 'Candidate 'Candidate
+  DiscoverLeader           :: Transition 'Candidate 'Follower
+  HigherTermFoundCandidate :: Transition 'Candidate 'Follower
+  BecomeLeader             :: Transition 'Candidate 'Leader
+
+  SendHeartbeat            :: Transition 'Leader 'Leader
+  DiscoverNewLeader        :: Transition 'Leader 'Follower
+  HigherTermFoundLeader    :: Transition 'Leader 'Follower
 
   -- TODO Replace with specific transition names
   Noop :: Transition init init
@@ -140,6 +145,13 @@ resetHeartbeatTimeout :: TransitionM v ()
 resetHeartbeatTimeout = do
   t <- asks configHeartbeatTimeout
   tell [ResetTimeoutTimer HeartbeatTimeout t]
+
+applyLogEntry :: Index -> TransitionM v ()
+applyLogEntry idx = do
+  mLogEntry <- lookupLogEntry idx <$> gets psLog
+  case mLogEntry of
+    Nothing -> panic "Cannot apply non existent log entry to state machine"
+    Just logEntry -> tell [ApplyLogEntry logEntry]
 
 updateElectionTimeoutCandidateState :: Index -> Index -> TransitionM v CandidateState
 updateElectionTimeoutCandidateState commitIndex lastApplied = do
