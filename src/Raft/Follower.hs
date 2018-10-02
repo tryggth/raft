@@ -13,9 +13,12 @@ module Raft.Follower (
   , handleRequestVote
   , handleRequestVoteResponse
   , handleTimeout
+  , handleClientRequest
 ) where
 
 import Protolude
+
+import Control.Monad.Writer (tell)
 
 import Data.Sequence (Seq, takeWhileL)
 import Data.Set (singleton)
@@ -57,10 +60,11 @@ handleAppendEntries (NodeFollowerState fs) sender AppendEntries{..} = do
                 if (aeLeaderCommit > fsCommitIndex fs)
                   then pure (True, updateCommitIndex fs)
                   else pure (True, fs)
-      send aeLeaderId $ AppendEntriesResponse
-        { aerTerm = psCurrentTerm
-        , aerSuccess = success
-        }
+      send (unLeaderId aeLeaderId) $
+        AppendEntriesResponse
+          { aerTerm = psCurrentTerm
+          , aerSuccess = success
+          }
       pure (followerResultState Noop newFollowerState)
     where
       removeLogsFromIndex :: Index -> TransitionM v ()
@@ -132,3 +136,10 @@ handleTimeout (NodeFollowerState fs) timeout =
     ElectionTimeout ->
       candidateResultState StartElection <$>
         updateElectionTimeoutCandidateState (fsCommitIndex fs) (fsLastApplied fs)
+
+-- | When a client handles a client request, it redirects the client to the
+-- current leader by responding with the current leader id, if it knows of one.
+handleClientRequest :: ClientReqHandler 'Follower v
+handleClientRequest (NodeFollowerState fs) (ClientReq clientId _) = do
+  tell [RedirectClient clientId (fsCurrentLeader fs)]
+  pure (followerResultState Noop fs)

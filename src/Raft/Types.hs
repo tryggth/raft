@@ -44,7 +44,7 @@ data NodeConfig = NodeConfig
   { configNodeId :: NodeId
   , configNodeIds :: NodeIds
   , configElectionTimeout :: Int
-  , configElectionHeartbeat :: Int
+  , configHeartbeatTimeout :: Int
   }
 
 -- | An entry in the replicated log
@@ -61,8 +61,10 @@ data AppendEntryError
   = UnexpectedLogIndex Index Index
   deriving (Show)
 
+type Entries v = Seq (Entry v)
+
 -- | The replicated log of entries on each node
-newtype Log v = Log (Seq (Entry v))
+newtype Log v = Log (Entries v)
 
 -- | Append a log entry to the log. Checks if the log is the correct index
 appendLogEntry :: Log v -> Entry v -> Either AppendEntryError (Log v)
@@ -103,6 +105,10 @@ lastLogEntryIndexAndTerm log =
     Nothing -> (index0, term0)
     Just entry -> (entryIndex entry, entryTerm entry)
 
+takeLogEntriesUntil :: Log v -> Index -> Entries v
+takeLogEntriesUntil (Log log) idx =
+  Seq.takeWhileL ((<=) idx . entryIndex) log
+
 dropLogEntriesUntil :: Log v -> Index -> Log v
 dropLogEntriesUntil (Log log) idx =
   Log (Seq.dropWhileL ((<=) idx . entryIndex) log)
@@ -131,30 +137,55 @@ data PersistentState v = PersistentState
 -- Events
 --------------------------------------------------------------------------------
 
+newtype ClientId = ClientId NodeId
+newtype LeaderId = LeaderId { unLeaderId :: NodeId }
+
 data Timeout
   = ElectionTimeout
-  | HearbeatTimeout
+    -- ^ Timeout in which a follower will become candidate
+  | HeartbeatTimeout
+    -- ^ Timeout in which a leader will send AppendEntries RPC to all followers
+
+data ClientReq v
+  = ClientReq ClientId v
 
 data Event v
   = Message (Message v)
+  | ClientRequest (ClientReq v)
   | Timeout Timeout
 
 --------------------------------------------------------------------------------
 -- Actions (TODO move to src/Raft/Action.hs)
 --------------------------------------------------------------------------------
 
+data CurrentLeader
+  = CurrentLeader LeaderId
+  | NoLeader
+
 data Action v
   = SendMessage NodeId (Message v)
+    -- ^ Send a message to a specific node id
+  | SendMessages (Map NodeId (Message v))
+    -- ^ Send a unique message to specific nodes in parallel
   | Broadcast NodeIds (Message v)
-  | ResetElectionTimeout Int
-  | ResetHeartbeatTimeout Int
+    -- ^ Broadcast the same message to all nodes
+  | ApplyLogEntry (Entry v)
+    -- ^ Apply a replicated log entry to state machine
+  | ResetTimeoutTimer Timeout Int
+    -- ^ Reset a timeout timer
+  | RedirectClient ClientId CurrentLeader
+    -- ^ Redirect a client to the current leader
+  | RespondToClient ClientId
+    -- ^ Respond to client after successful command application
 
 --------------------------------------------------------------------------------
 -- Node States
 --------------------------------------------------------------------------------
 
 data FollowerState = FollowerState
-  { fsCommitIndex :: Index
+  { fsCurrentLeader :: CurrentLeader
+    -- ^ The id of the current leader
+  , fsCommitIndex :: Index
     -- ^ index of highest log entry known to be committed
   , fsLastApplied :: Index
     -- ^ index of highest log entry applied to state machine
@@ -209,10 +240,17 @@ instance RPCType (RequestVote) v where
 instance RPCType (RequestVoteResponse) v where
   toRPC = RequestVoteResponseRPC
 
+rpcTerm :: RPC v -> Term
+rpcTerm = \case
+  AppendEntriesRPC ae -> aeTerm ae
+  AppendEntriesResponseRPC aer -> aerTerm aer
+  RequestVoteRPC rv -> rvTerm rv
+  RequestVoteResponseRPC rvr -> rvrTerm rvr
+
 data AppendEntries v = AppendEntries
   { aeTerm :: Term
     -- ^ leader's term
-  , aeLeaderId :: NodeId
+  , aeLeaderId :: LeaderId
     -- ^ so follower can redirect clients
   , aePrevLogIndex :: Index
     -- ^ index of log entry immediately preceding new ones

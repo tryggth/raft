@@ -14,7 +14,6 @@ import Protolude
 import Control.Monad.RWS
 import qualified Data.Set as Set
 import qualified Data.Map as Map
-import qualified Data.Sequence as Seq
 
 import Raft.Types
 
@@ -40,6 +39,7 @@ runTransitionM nodeConfig persistentState transition =
 
 type RPCHandler s r v = RPCType r v => NodeState s -> NodeId -> r -> TransitionM v (ResultState s v)
 type TimeoutHandler s v = NodeState s -> Timeout -> TransitionM v (ResultState s v)
+type ClientReqHandler s v = NodeState s -> ClientReq v -> TransitionM v (ResultState s v)
 
 --------------------------------------------------------------------------------
 -- Transitions
@@ -52,11 +52,17 @@ data Mode
 
 -- | All valid state transitions of a Raft node
 data Transition (init :: Mode) (res :: Mode) where
-  StartElection :: Transition 'Follower 'Candidate
-  RestartElection :: Transition 'Candidate 'Candidate
-  DiscoverLeader :: Transition 'Candidate 'Follower
-  BecomeLeader :: Transition 'Candidate 'Leader
-  DiscoverNewLeader :: Transition 'Leader 'Follower
+  StartElection            :: Transition 'Follower 'Candidate
+  HigherTermFoundFollower  :: Transition 'Follower 'Follower
+
+  RestartElection          :: Transition 'Candidate 'Candidate
+  DiscoverLeader           :: Transition 'Candidate 'Follower
+  HigherTermFoundCandidate :: Transition 'Candidate 'Follower
+  BecomeLeader             :: Transition 'Candidate 'Leader
+
+  SendHeartbeat            :: Transition 'Leader 'Leader
+  DiscoverNewLeader        :: Transition 'Leader 'Follower
+  HigherTermFoundLeader    :: Transition 'Leader 'Follower
 
   -- TODO Replace with specific transition names
   Noop :: Transition init init
@@ -118,27 +124,34 @@ send nodeId msg = do
   action <- SendMessage nodeId <$> toRPCMessage msg
   tell [action]
 
-incrementTerm :: TransitionM v Term
+uniqueBroadcast :: RPCType r v => Map NodeId r -> TransitionM v ()
+uniqueBroadcast msgs = do
+  action <- SendMessages <$> mapM toRPCMessage msgs
+  tell [action]
+
+incrementTerm :: TransitionM v ()
 incrementTerm = do
   psNextTerm <- gets (incrTerm . psCurrentTerm)
   modify $ \pstate ->
     pstate { psCurrentTerm = psNextTerm }
-  pure psNextTerm
 
 -- | Resets the election timeout.
-resetElectionTimeout :: TransitionM a ()
+resetElectionTimeout :: TransitionM v ()
 resetElectionTimeout = do
-    t <- asks configElectionTimeout
-    tell [ResetElectionTimeout t]
+  t <- asks configElectionTimeout
+  tell [ResetTimeoutTimer ElectionTimeout t]
 
-resetHeartbeatTimeout :: TransitionM a ()
+resetHeartbeatTimeout :: TransitionM v ()
 resetHeartbeatTimeout = do
-    t <- asks configElectionHeartbeat
-    tell [ResetElectionTimeout t]
+  t <- asks configHeartbeatTimeout
+  tell [ResetTimeoutTimer HeartbeatTimeout t]
 
-hasMajority :: Set a -> Set b -> Bool
-hasMajority totalNodeIds votes =
-  Set.size votes >= Set.size totalNodeIds `div` 2 + 1
+applyLogEntry :: Index -> TransitionM v ()
+applyLogEntry idx = do
+  mLogEntry <- lookupLogEntry idx <$> gets psLog
+  case mLogEntry of
+    Nothing -> panic "Cannot apply non existent log entry to state machine"
+    Just logEntry -> tell [ApplyLogEntry logEntry]
 
 updateElectionTimeoutCandidateState :: Index -> Index -> TransitionM v CandidateState
 updateElectionTimeoutCandidateState commitIndex lastApplied = do
@@ -173,30 +186,3 @@ updateElectionTimeoutCandidateState commitIndex lastApplied = do
     selfNodeId <- asks configNodeId
     modify $ \pstate ->
       pstate { psVotedFor = Just selfNodeId }
-
-leaderStepUp :: forall v. Index -> Index -> TransitionM v LeaderState
-leaderStepUp commitIndex lastApplied = do
-  resetHeartbeatTimeout
-  selfNodeId <- asks configNodeId
-  currentTerm <- gets psCurrentTerm
-  (logEntryIndex, logEntryTerm) <-
-    lastLogEntryIndexAndTerm <$> gets psLog
-  broadcast AppendEntries { aeTerm = currentTerm
-                          , aeLeaderId = selfNodeId
-                          , aePrevLogIndex = logEntryIndex
-                          , aePrevLogTerm = logEntryTerm
-                          , aeEntries = Seq.Empty :: Seq.Seq (Entry v)
-                          , aeLeaderCommit = index0
-                          }
-
-  cNodeIds <- asks configNodeIds
-  pure LeaderState
-          { lsCommitIndex = commitIndex
-          , lsLastApplied = lastApplied
-          , lsNextIndex = Map.fromList $
-              flip (,) (incrIndex logEntryIndex) <$> Set.toList cNodeIds
-          , lsMatchIndex = Map.fromList $
-              flip (,) index0 <$> Set.toList cNodeIds
-          -- ^ We use index0 as the new leader doesn't know yet what
-          -- the highest log has been seen by other nodes
-          }
