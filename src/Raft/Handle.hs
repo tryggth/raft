@@ -7,7 +7,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE GADTs #-}
 
-module Raft where
+module Raft.Handle where
 
 import Protolude
 
@@ -133,6 +133,7 @@ handleEvent' RaftHandler{..} nodeConfig initNodeState persistentState event =
 
     convertToFollower :: NodeState s -> TransitionM v (ResultState s v)
     convertToFollower nodeState = do
+      resetElectionTimeout
       case nodeState of
         NodeFollowerState _ ->
           pure $ ResultState HigherTermFoundFollower nodeState

@@ -1,6 +1,6 @@
 import Protolude
 
-import Raft
+import Raft.Handle
 
 main :: IO ()
 main = putText "Test suite not yet implemented"
