@@ -107,7 +107,7 @@ handleEvent' RaftHandler{..} nodeConfig initNodeState persistentState event =
           then incrLastApplied
           else pure initNodeState
 
-      -- If RPC request or response contains ter T > currentTerm: set
+      -- If RPC request or response contains term T > currentTerm: set
       -- currentTerm = T, convert to follower
       currentTerm <- gets psCurrentTerm
       if rpcTerm rpc > currentTerm
