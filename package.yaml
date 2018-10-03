@@ -25,6 +25,7 @@ dependencies:
 - mtl
 - containers
 - text
+- stm
 
 default-extensions:
   NoImplicitPrelude
