@@ -1,5 +1,5 @@
 
-module Raft.Timer (
+module Control.Concurrent.STM.Timer (
   waitTimer,
   startTimer,
   newTimer
