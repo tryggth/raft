@@ -147,10 +147,10 @@ data PersistentState v = PersistentState
 --------------------------------------------------------------------------------
 
 newtype ClientId = ClientId NodeId
-  deriving Show
+  deriving (Show, Eq)
 
 newtype LeaderId = LeaderId { unLeaderId :: NodeId }
-  deriving Show
+  deriving (Show, Eq)
 
 data Timeout
   = ElectionTimeout
@@ -176,7 +176,7 @@ data Event v
 data CurrentLeader
   = CurrentLeader LeaderId
   | NoLeader
-  deriving (Show)
+  deriving (Show, Eq)
 
 data Action v
   = SendMessage NodeId (Message v)

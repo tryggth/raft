@@ -178,8 +178,17 @@ unit_init_protocol = runScenario $ do
   -- And the rest of the nodes are followers
   liftIO $ HUnit.assertBool "Node1 has not remained follower"
     (fromMaybe False $ isFollower . fst <$> Map.lookup node1 nodeStates)
+  liftIO $ HUnit.assertBool "Node1 has not recognized node0 as leader"
+    (fromMaybe False $ (== CurrentLeader (LeaderId node0)) . checkCurrentLeader . fst <$> Map.lookup node1 nodeStates)
   liftIO $ HUnit.assertBool "Node2 has not remained follower"
     (fromMaybe False $ isFollower . fst <$> Map.lookup node2 nodeStates)
+  liftIO $ HUnit.assertBool "Node2 has not recognized node0 as leader"
+    (fromMaybe False $ (== CurrentLeader (LeaderId node0)) . checkCurrentLeader . fst <$> Map.lookup node2 nodeStates)
+
+checkCurrentLeader :: RaftNodeState v -> CurrentLeader
+checkCurrentLeader (RaftNodeState (NodeFollowerState FollowerState{..})) = fsCurrentLeader
+checkCurrentLeader (RaftNodeState (NodeCandidateState _)) = NoLeader
+checkCurrentLeader (RaftNodeState (NodeLeaderState _)) = NoLeader
 
 unit_append_entries_client_request :: IO ()
 unit_append_entries_client_request = runScenario $ do
@@ -187,10 +196,14 @@ unit_append_entries_client_request = runScenario $ do
   testClientRequest node0
   nodeMessages <- gets testNodeMessages
   persistentStates <- gets $ fmap snd . testNodeStates
+  raftStates <- gets $ fmap fst . testNodeStates
   liftIO $ print persistentStates
+  liftIO $ print raftStates
+  -- Test node logs are of the right length
   liftIO $ HUnit.assertBool "Node0 has not updated its logs"
     (fromMaybe False $ (/= 0) . Seq.length . unLog . psLog <$> Map.lookup node0 persistentStates)
   liftIO $ HUnit.assertBool "Node1 has not updated its logs"
     (fromMaybe False $ (/= 0) . Seq.length . unLog . psLog <$> Map.lookup node1 persistentStates)
   liftIO $ HUnit.assertBool "Node2 has not updated its logs"
     (fromMaybe False $ (/= 0) . Seq.length . unLog . psLog <$> Map.lookup node2 persistentStates)
+  -- Test all nodes have committed their logs

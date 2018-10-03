@@ -48,7 +48,7 @@ handleAppendEntries (NodeFollowerState fs) sender AppendEntries{..} = do
               Nothing
                 | aePrevLogIndex == index0 -> do
                     appendNewLogEntries aeEntries
-                    pure (True, fs)
+                    pure (True, updateLeader fs)
                 | otherwise -> pure (False, fs)
               Just logEntry -> do
                 -- 2. Reply false if log doesn't contain an entry at
@@ -67,8 +67,8 @@ handleAppendEntries (NodeFollowerState fs) sender AppendEntries{..} = do
                     -- 5. If leaderCommit > commitIndex, set commitIndex =
                     -- min(leaderCommit, index of last new entry)
                     if aeLeaderCommit > fsCommitIndex fs
-                      then pure (True, updateCommitIndex fs)
-                      else pure (True, fs)
+                      then pure (True, (updateLeader . updateCommitIndex) fs)
+                      else pure (True, updateLeader fs)
       send (unLeaderId aeLeaderId)
         AppendEntriesResponse
           { aerTerm = psCurrentTerm
@@ -90,6 +90,9 @@ handleAppendEntries (NodeFollowerState fs) sender AppendEntries{..} = do
           Just e ->
             let newCommitIndex = min aeLeaderCommit (entryIndex e)
              in followerState { fsCommitIndex = newCommitIndex }
+
+      updateLeader :: FollowerState -> FollowerState
+      updateLeader followerState = followerState { fsCurrentLeader = CurrentLeader (LeaderId sender) }
 
 -- | Followers should not respond to 'AppendEntriesResponse' messages.
 handleAppendEntriesResponse :: RPCHandler 'Follower AppendEntriesResponse v
