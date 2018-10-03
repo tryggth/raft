@@ -252,3 +252,14 @@ unit_append_entries_client_request = runScenario $ do
 
   testHeartbeat node0
 
+  persistentStates1 <- gets $ fmap snd . testNodeStates
+  raftStates1 <- gets $ fmap fst . testNodeStates
+
+  -- Test all nodes have committed their logs after leader heartbeats
+  liftIO $ HUnit.assertBool "Node0 has not committed logs after heartbeat"
+    (fromMaybe False $ (== 1) . getCommittedLogIndex <$> Map.lookup node0 raftStates1)
+  liftIO $ HUnit.assertBool "Node1 has not committed logs after heartbeat"
+    (fromMaybe False $ (== 1) . getCommittedLogIndex <$> Map.lookup node1 raftStates1)
+  liftIO $ HUnit.assertBool "Node2 has not committed logs after heartbeat"
+    (fromMaybe False $ (== 1) . getCommittedLogIndex <$> Map.lookup node2 raftStates1)
+
