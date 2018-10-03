@@ -160,7 +160,7 @@ applyLogEntry idx = do
   mLogEntry <- lookupLogEntry idx <$> gets psLog
   case mLogEntry of
     Nothing -> panic "Cannot apply non existent log entry to state machine"
-    Just logEntry -> tell [ApplyCommittedEntry logEntry]
+    Just logEntry -> tell [ApplyCommittedLogEntry logEntry]
 
 appendNewLogEntries :: Seq (Entry v) -> TransitionM v ()
 appendNewLogEntries newEntries =

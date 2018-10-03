@@ -185,7 +185,7 @@ data Action v
     -- ^ Send a unique message to specific nodes in parallel
   | Broadcast NodeIds (Message v)
     -- ^ Broadcast the same message to all nodes
-  | ApplyCommittedEntry (Entry v)
+  | ApplyCommittedLogEntry (Entry v)
     -- ^ Apply a replicated log entry to state machine
   | ResetTimeoutTimer Timeout Int
     -- ^ Reset a timeout timer
