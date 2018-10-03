@@ -53,8 +53,6 @@ handleAppendEntriesResponse (NodeLeaderState ls) sender appendEntriesResp
             let newNextIndices = Map.insert sender (lastLogEntryIndex + 1) (lsNextIndex ls)
                 newMatchIndices = Map.insert sender lastLogEntryIndex (lsMatchIndex ls)
 
-            -- Apply log entry to state machine
-            applyLogEntry lastLogEntryIndex
             pure ls { lsNextIndex = newNextIndices, lsMatchIndex = newMatchIndices }
       -- Increment leader commit index if now a majority of followers have
       -- replicated an entry at a given term.

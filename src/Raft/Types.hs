@@ -57,7 +57,7 @@ data Entry v = Entry
   , entryValue :: v
     -- ^ command to update state machine
   , entryClientId :: ClientId
-  } deriving (Show)
+  } deriving (Show, Eq)
 
 data AppendEntryError
   = UnexpectedLogIndex Index Index
