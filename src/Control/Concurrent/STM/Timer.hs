@@ -15,7 +15,7 @@ data Timer = Timer
   }
 
 waitTimer :: Timer -> IO ()
-waitTimer (Timer _ lock) = do
+waitTimer (Timer _ lock) =
   atomically $ readTMVar lock
 
 -- | Starting a timer will only work if the timer is currently stopped
