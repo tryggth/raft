@@ -124,13 +124,13 @@ printIfNode nId nId' msg = do
 
 testHandleEvent :: NodeId -> Event TestValue -> Scenario ()
 testHandleEvent nodeId event = do
-  printIfNode node0 nodeId ("Received event: " ++ show event)
+  printIfNode node1 nodeId ("Received event: " ++ show event)
   (nodeConfig, nodeMessages, raftState, persistentState) <- getNodeInfo nodeId
   let (newRaftState, newPersistentState, actions) = handleEvent nodeConfig raftState persistentState event
   testUpdateState nodeId event newRaftState newPersistentState nodeMessages
-  printIfNode node0 nodeId ("New RaftState: " ++ show newRaftState)
-  printIfNode node0 nodeId ("New PersistentState: " ++ show newPersistentState)
-  printIfNode node0 nodeId ("Generated actions: " ++ show actions)
+  printIfNode node1 nodeId ("New RaftState: " ++ show newRaftState)
+  printIfNode node1 nodeId ("New PersistentState: " ++ show newPersistentState)
+  printIfNode node1 nodeId ("Generated actions: " ++ show actions)
   testHandleActions actions
 
 testUpdateState
@@ -162,6 +162,33 @@ testInitLeader nId =
 testClientRequest :: NodeId -> Scenario ()
 testClientRequest nId = do
   testHandleEvent nId (ClientRequest (ClientReq client0 TestValue))
+
+testHeartbeat :: NodeId -> Scenario ()
+testHeartbeat sender = do
+  nodeStates <- gets testNodeStates
+  nIds <- gets testNodeIds
+  -- sender must be a leader
+  let Just (raftState, persistentState) = Map.lookup sender nodeStates
+  when (not $ isLeader raftState) $ panic $ toS (show sender ++ " must a be a leader to heartbeat")
+  let Just entry@Entry{..} = lastLogEntry $ psLog persistentState
+  let LeaderState{..} = getInnerLeaderState raftState
+  let appendEntry = AppendEntries
+                        { aeTerm = psCurrentTerm persistentState
+                        , aeLeaderId = LeaderId sender
+                        , aePrevLogIndex = entryIndex
+                        , aePrevLogTerm = entryTerm
+                        , aeEntries = Seq.empty
+                        , aeLeaderCommit = lsCommitIndex
+                        }
+
+  mapM_ (flip testHandleEvent (Message (RPC sender (AppendEntriesRPC appendEntry)))) (Set.filter (sender /=) nIds)
+  where
+    getInnerLeaderState :: RaftNodeState v -> LeaderState
+    getInnerLeaderState nodeState = case nodeState of
+      (RaftNodeState (NodeLeaderState leaderState)) -> leaderState
+      _ -> panic "Node must be a leader"
+  -- Send to all nodes
+  --testHandleEvent nId (Message (RPC sender (AppendEntriesRPC (AppendEntries appendEntries))))
 
 -- When the protocol starts, every node is a follower
 -- One of these followers must become a leader
@@ -195,27 +222,33 @@ getLastAppliedLog (RaftNodeState (NodeFollowerState FollowerState{..})) = fsLast
 getLastAppliedLog (RaftNodeState (NodeCandidateState CandidateState{..})) = csLastApplied
 getLastAppliedLog (RaftNodeState (NodeLeaderState LeaderState{..})) = lsLastApplied
 
+getCommittedLogIndex :: RaftNodeState v -> Index
+getCommittedLogIndex (RaftNodeState (NodeFollowerState FollowerState{..})) = fsCommitIndex
+getCommittedLogIndex (RaftNodeState (NodeCandidateState CandidateState{..})) = csCommitIndex
+getCommittedLogIndex (RaftNodeState (NodeLeaderState LeaderState{..})) = lsCommitIndex
+
 unit_append_entries_client_request :: IO ()
 unit_append_entries_client_request = runScenario $ do
   testInitLeader node0
   testClientRequest node0
   nodeMessages <- gets testNodeMessages
-  persistentStates <- gets $ fmap snd . testNodeStates
-  raftStates <- gets $ fmap fst . testNodeStates
-  liftIO $ print persistentStates
-  liftIO $ print raftStates
+  persistentStates0 <- gets $ fmap snd . testNodeStates
+  raftStates0 <- gets $ fmap fst . testNodeStates
   -- Test node logs are of the right length
   liftIO $ HUnit.assertBool "Node0 has not appended logs"
-    (fromMaybe False $ (/= 0) . Seq.length . unLog . psLog <$> Map.lookup node0 persistentStates)
+    (fromMaybe False $ (/= 0) . Seq.length . unLog . psLog <$> Map.lookup node0 persistentStates0)
   liftIO $ HUnit.assertBool "Node1 has not appended logs"
-    (fromMaybe False $ (/= 0) . Seq.length . unLog . psLog <$> Map.lookup node1 persistentStates)
+    (fromMaybe False $ (/= 0) . Seq.length . unLog . psLog <$> Map.lookup node1 persistentStates0)
   liftIO $ HUnit.assertBool "Node2 has not appended logs"
-    (fromMaybe False $ (/= 0) . Seq.length . unLog . psLog <$> Map.lookup node2 persistentStates)
+    (fromMaybe False $ (/= 0) . Seq.length . unLog . psLog <$> Map.lookup node2 persistentStates0)
+
   -- Test node0 has committed their logs
   liftIO $ HUnit.assertBool "Node0 has not committed logs"
-    (fromMaybe False $ (== 1) . getLastAppliedLog <$> Map.lookup node0 raftStates)
+    (fromMaybe False $ (== 1) . getCommittedLogIndex <$> Map.lookup node0 raftStates0)
   liftIO $ HUnit.assertBool "Node1 has committed logs"
-    (fromMaybe False $ (== 0) . getLastAppliedLog <$> Map.lookup node1 raftStates)
+    (fromMaybe False $ (== 0) . getCommittedLogIndex <$> Map.lookup node1 raftStates0)
   liftIO $ HUnit.assertBool "Node2 has committed logs"
-    (fromMaybe False $ (== 0) . getLastAppliedLog <$> Map.lookup node2 raftStates)
-  -- Test all nodes have committed their logs
+    (fromMaybe False $ (== 0) . getCommittedLogIndex <$> Map.lookup node2 raftStates0)
+
+  testHeartbeat node0
+

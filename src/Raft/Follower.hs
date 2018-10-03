@@ -18,7 +18,6 @@ module Raft.Follower (
 
 import Protolude
 
-import qualified Debug.Trace as DT
 import Control.Monad.Writer (tell)
 
 import Data.Sequence (Seq, takeWhileL)
@@ -86,10 +85,11 @@ handleAppendEntries (NodeFollowerState fs) sender AppendEntries{..} = do
       updateCommitIndex :: FollowerState -> FollowerState
       updateCommitIndex followerState =
         case lastEntry aeEntries of
-          Nothing -> followerState
+          Nothing ->
+            followerState { fsCommitIndex = aeLeaderCommit }
           Just e ->
             let newCommitIndex = min aeLeaderCommit (entryIndex e)
-             in followerState { fsCommitIndex = newCommitIndex }
+            in followerState { fsCommitIndex = newCommitIndex }
 
       updateLeader :: FollowerState -> FollowerState
       updateLeader followerState = followerState { fsCurrentLeader = CurrentLeader (LeaderId sender) }
