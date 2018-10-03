@@ -23,6 +23,7 @@ import Protolude
 import Control.Monad.Writer (tell)
 
 import qualified Data.Set as Set
+import qualified Debug.Trace as DT
 import qualified Data.Map as Map
 import qualified Data.Sequence as Seq
 
@@ -46,7 +47,7 @@ handleAppendEntriesResponse (NodeCandidateState candidateState) _sender _appendE
   pure $ candidateResultState Noop candidateState
 
 handleRequestVote :: RPCHandler 'Candidate RequestVote v
-handleRequestVote ((NodeCandidateState candidateState@CandidateState{..})) sender requestVote@RequestVote{..} = do
+handleRequestVote (NodeCandidateState candidateState@CandidateState{..}) sender requestVote@RequestVote{..} = do
   currentTerm <- gets psCurrentTerm
   if rvTerm > currentTerm
     then stepDown sender rvTerm csCommitIndex csLastApplied
@@ -59,11 +60,14 @@ handleRequestVoteResponse :: forall v. RPCHandler 'Candidate RequestVoteResponse
 handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..}) sender requestVoteResp@RequestVoteResponse{..} = do
   currentTerm <- gets psCurrentTerm
   cNodeIds <- asks configNodeIds
-  if  | rvrTerm < currentTerm -> pure $ candidateResultState Noop candidateState
-      | rvrTerm > currentTerm -> stepDown sender rvrTerm csCommitIndex csLastApplied
-      | not rvrVoteGranted -> pure $ candidateResultState Noop candidateState
-      | Set.member sender csVotes -> pure $ candidateResultState Noop candidateState
-      | otherwise -> do
+  if
+      -- | rvrTerm < currentTerm -> DT.trace ("rvrTerm: " ++ show rvrTerm ++ ",
+      --currentTerm: " ++ show currentTerm) pure $ candidateResultState Noop
+      --candidateState
+      | rvrTerm > currentTerm -> DT.trace "rvrTerm > currentTerm" stepDown sender rvrTerm csCommitIndex csLastApplied
+      | not rvrVoteGranted -> DT.trace "not rvrVoteGranted" pure $ candidateResultState Noop candidateState
+      | Set.member sender csVotes -> DT.trace "Set.member sender csVotes" pure $ candidateResultState Noop candidateState
+      | otherwise -> DT.trace "otherwise" $ do
           let newCsVotes = Set.insert sender csVotes
 
           if not $ hasMajority cNodeIds newCsVotes

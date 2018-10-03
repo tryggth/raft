@@ -24,6 +24,7 @@ dependencies:
 - protolude
 - mtl
 - containers
+- text
 
 default-extensions:
   NoImplicitPrelude
@@ -32,6 +33,13 @@ default-extensions:
 
 library:
   source-dirs: src
+  exposed-modules:
+    - Raft.Handle
+    - Raft.Types
+    - Raft.Monad
+    - Raft.Leader
+    - Raft.Candidate
+    - Raft.Follower
 
 executables:
   raft-exe:
@@ -46,7 +54,7 @@ executables:
 
 tests:
   raft-test:
-    main:                Spec.hs
+    main:                TestDriver.hs
     source-dirs:         test
     ghc-options:
     - -threaded

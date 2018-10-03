@@ -5,12 +5,12 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 module Raft.Monad where
 
 import Protolude
-
+import qualified Debug.Trace as DT
 import Control.Monad.RWS
 import qualified Data.Set as Set
 import qualified Data.Map as Map
@@ -49,6 +49,7 @@ data Mode
   = Follower
   | Candidate
   | Leader
+  deriving (Show)
 
 -- | All valid state transitions of a Raft node
 data Transition (init :: Mode) (res :: Mode) where
@@ -67,15 +68,21 @@ data Transition (init :: Mode) (res :: Mode) where
   -- TODO Replace with specific transition names
   Noop :: Transition init init
 
+deriving instance Show (Transition init res)
+
 -- | The volatile state of a Raft Node
 data NodeState (a :: Mode) where
   NodeFollowerState :: FollowerState -> NodeState 'Follower
   NodeCandidateState :: CandidateState -> NodeState 'Candidate
   NodeLeaderState :: LeaderState -> NodeState 'Leader
 
+deriving instance Show (NodeState v)
+
 -- | Existential type hiding the result type of a transition
 data ResultState init v where
   ResultState :: Transition init res -> NodeState res -> ResultState init v
+
+deriving instance Show (ResultState init v)
 
 followerResultState
   :: Transition init 'Follower
@@ -101,6 +108,8 @@ leaderResultState transition lstate =
 -- | Existential type hiding the internal node state
 data RaftNodeState v where
   RaftNodeState :: NodeState s -> RaftNodeState v
+
+deriving instance Show (RaftNodeState v)
 
 --------------------------------------------------------------------------------
 -- DSL (TODO move to src/Raft/Action.hs)
@@ -151,7 +160,14 @@ applyLogEntry idx = do
   mLogEntry <- lookupLogEntry idx <$> gets psLog
   case mLogEntry of
     Nothing -> panic "Cannot apply non existent log entry to state machine"
-    Just logEntry -> tell [ApplyLogEntry logEntry]
+    Just logEntry -> tell [ApplyCommittedEntry logEntry]
+
+appendNewLogEntries :: Seq (Entry v) -> TransitionM v ()
+appendNewLogEntries newEntries =
+  modify $ \pstate ->
+    case appendLogEntries (psLog pstate) newEntries of
+      Left err -> panic (show err)
+      Right newLog -> pstate { psLog = newLog }
 
 updateElectionTimeoutCandidateState :: Index -> Index -> TransitionM v CandidateState
 updateElectionTimeoutCandidateState commitIndex lastApplied = do
@@ -186,3 +202,18 @@ updateElectionTimeoutCandidateState commitIndex lastApplied = do
     selfNodeId <- asks configNodeId
     modify $ \pstate ->
       pstate { psVotedFor = Just selfNodeId }
+
+isLeader :: RaftNodeState v -> Bool
+isLeader (RaftNodeState (NodeFollowerState _)) = False
+isLeader (RaftNodeState (NodeCandidateState _)) = False
+isLeader (RaftNodeState (NodeLeaderState _)) = True
+
+isCandidate :: RaftNodeState v -> Bool
+isCandidate (RaftNodeState (NodeFollowerState _)) = False
+isCandidate (RaftNodeState (NodeCandidateState _)) = True
+isCandidate (RaftNodeState (NodeLeaderState _)) = False
+
+isFollower :: RaftNodeState v -> Bool
+isFollower (RaftNodeState (NodeFollowerState _)) = True
+isFollower (RaftNodeState (NodeCandidateState _)) = False
+isFollower (RaftNodeState (NodeLeaderState _)) = False

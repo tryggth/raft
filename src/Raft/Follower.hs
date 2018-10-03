@@ -18,6 +18,7 @@ module Raft.Follower (
 
 import Protolude
 
+import qualified Debug.Trace as DT
 import Control.Monad.Writer (tell)
 
 import Data.Sequence (Seq, takeWhileL)
@@ -39,32 +40,41 @@ handleAppendEntries :: forall v. RPCHandler 'Follower (AppendEntries v) v
 handleAppendEntries (NodeFollowerState fs) sender AppendEntries{..} = do
       PersistentState{..} <- get
       (success, newFollowerState) <-
-        if psCurrentTerm < aeTerm
+        if aeTerm < psCurrentTerm
           -- 1. Reply false if term < currentTerm
           then pure (False, fs)
           else
             case lookupLogEntry aePrevLogIndex psLog of
-              -- 2. Reply false if log doesn't contain an entry at prevLogIndex
-              -- whose term matches prevLogTerm
-              Nothing -> pure (False, fs)
+              Nothing
+                | aePrevLogIndex == index0 -> do
+                    appendNewLogEntries aeEntries
+                    pure (True, fs)
+                | otherwise -> pure (False, fs)
               Just logEntry -> do
-                -- 3. If an existing entry conflicts with a new one (same index
-                -- but different terms), delete the existing entry and all that
-                -- follow it.
-                when (entryTerm logEntry /= aePrevLogTerm) $
-                  removeLogsFromIndex aePrevLogIndex
-                -- 4. Append any new entries not already in the log
-                appendNewLogEntries (newLogEntries logEntry)
-                -- 5. If leaderCommit > commitIndex, set commitIndex =
-                -- min(leaderCommit, index of last new entry)
-                if (aeLeaderCommit > fsCommitIndex fs)
-                  then pure (True, updateCommitIndex fs)
-                  else pure (True, fs)
-      send (unLeaderId aeLeaderId) $
+                -- 2. Reply false if log doesn't contain an entry at
+                -- prevLogIndex
+                -- whose term matches prevLogTerm.
+                if entryTerm logEntry /= aePrevLogTerm
+                  then pure (False, fs)
+                  else do
+                    -- 3. If an existing entry conflicts with a new one (same index
+                    -- but different terms), delete the existing entry and all that
+                    -- follow it.
+                    when (entryTerm logEntry /= aePrevLogTerm) $
+                      removeLogsFromIndex aePrevLogIndex
+                    -- 4. Append any new entries not already in the log
+                    appendNewLogEntries aeEntries
+                    -- 5. If leaderCommit > commitIndex, set commitIndex =
+                    -- min(leaderCommit, index of last new entry)
+                    if aeLeaderCommit > fsCommitIndex fs
+                      then pure (True, updateCommitIndex fs)
+                      else pure (True, fs)
+      send (unLeaderId aeLeaderId)
         AppendEntriesResponse
           { aerTerm = psCurrentTerm
           , aerSuccess = success
           }
+      resetElectionTimeout
       pure (followerResultState Noop newFollowerState)
     where
       removeLogsFromIndex :: Index -> TransitionM v ()
@@ -72,17 +82,6 @@ handleAppendEntries (NodeFollowerState fs) sender AppendEntries{..} = do
         modify $ \pstate ->
           let log = psLog pstate
            in pstate { psLog = dropLogEntriesUntil log idx }
-
-      appendNewLogEntries :: Seq (Entry v) -> TransitionM v ()
-      appendNewLogEntries newEntries =
-        modify $ \pstate ->
-          case appendLogEntries (psLog pstate) newEntries of
-            Left err -> panic (show err)
-            Right newLog -> pstate { psLog = newLog }
-
-      newLogEntries :: Entry v -> Seq (Entry v)
-      newLogEntries lastLogEntry =
-        takeWhileL ((<) (entryIndex lastLogEntry) . entryIndex) aeEntries
 
       updateCommitIndex :: FollowerState -> FollowerState
       updateCommitIndex followerState =
@@ -101,14 +100,15 @@ handleRequestVote :: RPCHandler 'Follower RequestVote v
 handleRequestVote (NodeFollowerState fs) sender RequestVote{..} = do
     PersistentState{..} <- get
     let voteGranted = giveVote psCurrentTerm psVotedFor psLog
-    send sender $ RequestVoteResponse
+    send sender RequestVoteResponse
       { rvrTerm = psCurrentTerm
       , rvrVoteGranted = voteGranted
       }
+    modify $ \ps -> ps { psVotedFor = Just sender }
     pure $ followerResultState Noop fs
   where
     giveVote term mVotedFor log =
-      and [ term < rvTerm
+      and [ term <= rvTerm
           , validCandidateId mVotedFor
           , validCandidateLog log
           ]
@@ -121,7 +121,7 @@ handleRequestVote (NodeFollowerState fs) sender RequestVote{..} = do
     validCandidateLog log =
       case lastLogEntry log of
         Nothing -> True
-        Just (Entry idx term _) ->
+        Just (Entry idx term _ _) ->
           term < rvLastLogTerm && idx < rvLastLogIndex
 
 -- | Followers should not respond to 'RequestVoteResponse' messages.
@@ -134,6 +134,10 @@ handleTimeout :: TimeoutHandler 'Follower v
 handleTimeout (NodeFollowerState fs) timeout =
   case timeout of
     ElectionTimeout ->
+      candidateResultState StartElection <$>
+        updateElectionTimeoutCandidateState (fsCommitIndex fs) (fsLastApplied fs)
+    -- TODO: Is the response the same in both cases?
+    HeartbeatTimeout ->
       candidateResultState StartElection <$>
         updateElectionTimeoutCandidateState (fsCommitIndex fs) (fsLastApplied fs)
 

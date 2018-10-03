@@ -19,7 +19,8 @@ module Raft.Leader (
 import Protolude
 
 import qualified Data.Map as Map
-import Data.Sequence (Seq(Empty))
+import Data.Sequence (Seq((:<|),Empty), (><))
+import qualified Data.Sequence as Seq
 
 import Raft.Monad
 import Raft.Types
@@ -78,7 +79,22 @@ handleTimeout (NodeLeaderState ls) timeout =
       pure (leaderResultState SendHeartbeat ls)
 
 handleClientRequest :: ClientReqHandler 'Leader v
-handleClientRequest = undefined
+handleClientRequest (NodeLeaderState ls) (ClientReq clientId v) = do
+    lastLogEntryIndex <- lastLogEntryIndex <$> gets psLog
+    broadcast =<< mkAppendEntriesRPC =<< mkNewLogEntry lastLogEntryIndex
+    pure (leaderResultState Noop ls)
+  where
+    mkAppendEntriesRPC entry =
+      appendEntriesRPC (entry :<| Empty) ls
+
+    mkNewLogEntry idx = do
+      currentTerm <- gets psCurrentTerm
+      pure $ Entry
+        { entryIndex = idx
+        , entryTerm = currentTerm
+        , entryValue = v
+        , entryClientId = clientId
+        }
 
 --------------------------------------------------------------------------------
 
@@ -118,6 +134,7 @@ appendEntriesRPC entries leaderState = do
   leaderId <- asks configNodeId
   (prevLogIndex, prevLogTerm) <-
     lastLogEntryIndexAndTerm <$> gets psLog
+  appendNewLogEntries entries
   pure AppendEntries
     { aeTerm = term
     , aeLeaderId = LeaderId leaderId

@@ -20,7 +20,7 @@ type NodeId = ByteString
 type NodeIds = Set NodeId
 
 newtype Term = Term Natural
-  deriving (Eq, Ord, Enum)
+  deriving (Show, Eq, Ord, Enum)
 
 term0 :: Term
 term0 = Term 0
@@ -38,14 +38,15 @@ incrIndex :: Index -> Index
 incrIndex = succ
 
 decrIndex :: Index -> Index
-decrIndex = pred
+decrIndex (Index 0) = index0
+decrIndex i = pred i
 
 data NodeConfig = NodeConfig
   { configNodeId :: NodeId
   , configNodeIds :: NodeIds
   , configElectionTimeout :: Int
   , configHeartbeatTimeout :: Int
-  }
+  } deriving (Show)
 
 -- | An entry in the replicated log
 data Entry v = Entry
@@ -55,7 +56,8 @@ data Entry v = Entry
     -- ^ term when entry was received by leader
   , entryValue :: v
     -- ^ command to update state machine
-  }
+  , entryClientId :: ClientId
+  } deriving (Show)
 
 data AppendEntryError
   = UnexpectedLogIndex Index Index
@@ -64,7 +66,7 @@ data AppendEntryError
 type Entries v = Seq (Entry v)
 
 -- | The replicated log of entries on each node
-newtype Log v = Log (Entries v)
+newtype Log v = Log { unLog :: Entries v } deriving Show
 
 -- | Append a log entry to the log. Checks if the log is the correct index
 appendLogEntry :: Log v -> Entry v -> Either AppendEntryError (Log v)
@@ -95,6 +97,13 @@ lastLogEntry (Log entries) = lastEntry entries
 lastEntry :: Seq (Entry v) -> Maybe (Entry v)
 lastEntry Empty = Nothing
 lastEntry (e :<| _) = Just e
+
+-- | Get the last log entry index
+lastLogEntryIndex :: Log v -> Index
+lastLogEntryIndex log =
+  case lastLogEntry log of
+    Nothing -> index0
+    Just entry -> entryIndex entry
 
 -- | Get the last log entry index and term
 lastLogEntryIndexAndTerm :: Log v -> (Index, Term)
@@ -131,28 +140,34 @@ data PersistentState v = PersistentState
     -- ^ candidate id that received vote in current term
   , psLog :: Log v
     -- ^ log entries; each entry contains command for state machine
-  }
+  } deriving (Show)
 
 --------------------------------------------------------------------------------
 -- Events
 --------------------------------------------------------------------------------
 
 newtype ClientId = ClientId NodeId
+  deriving Show
+
 newtype LeaderId = LeaderId { unLeaderId :: NodeId }
+  deriving Show
 
 data Timeout
   = ElectionTimeout
     -- ^ Timeout in which a follower will become candidate
   | HeartbeatTimeout
     -- ^ Timeout in which a leader will send AppendEntries RPC to all followers
+  deriving (Show)
 
 data ClientReq v
   = ClientReq ClientId v
+  deriving (Show)
 
 data Event v
   = Message (Message v)
   | ClientRequest (ClientReq v)
   | Timeout Timeout
+  deriving (Show)
 
 --------------------------------------------------------------------------------
 -- Actions (TODO move to src/Raft/Action.hs)
@@ -161,6 +176,7 @@ data Event v
 data CurrentLeader
   = CurrentLeader LeaderId
   | NoLeader
+  deriving (Show)
 
 data Action v
   = SendMessage NodeId (Message v)
@@ -169,7 +185,7 @@ data Action v
     -- ^ Send a unique message to specific nodes in parallel
   | Broadcast NodeIds (Message v)
     -- ^ Broadcast the same message to all nodes
-  | ApplyLogEntry (Entry v)
+  | ApplyCommittedEntry (Entry v)
     -- ^ Apply a replicated log entry to state machine
   | ResetTimeoutTimer Timeout Int
     -- ^ Reset a timeout timer
@@ -177,6 +193,7 @@ data Action v
     -- ^ Redirect a client to the current leader
   | RespondToClient ClientId
     -- ^ Respond to client after successful command application
+  deriving (Show)
 
 --------------------------------------------------------------------------------
 -- Node States
@@ -189,7 +206,7 @@ data FollowerState = FollowerState
     -- ^ index of highest log entry known to be committed
   , fsLastApplied :: Index
     -- ^ index of highest log entry applied to state machine
-  }
+  } deriving (Show)
 
 data CandidateState = CandidateState
   { csCommitIndex :: Index
@@ -197,7 +214,7 @@ data CandidateState = CandidateState
   , csLastApplied :: Index
     -- ^ index of highest log entry applied to state machine
   , csVotes :: NodeIds
-  }
+  } deriving (Show)
 
 data LeaderState = LeaderState
   { lsCommitIndex :: Index
@@ -208,7 +225,7 @@ data LeaderState = LeaderState
     -- ^ for each server, index of the next log entry to send to that server
   , lsMatchIndex :: Map NodeId Index
     -- ^ for each server, index of highest log entry known to be replicated on server
-  }
+  } deriving (Show)
 
 --------------------------------------------------------------------------------
 -- RPCs
@@ -217,13 +234,14 @@ data LeaderState = LeaderState
 data Message v = RPC
   { sender :: NodeId
   , rpc :: RPC v
-  }
+  } deriving (Show)
 
 data RPC v
   = AppendEntriesRPC (AppendEntries v)
   | AppendEntriesResponseRPC AppendEntriesResponse
   | RequestVoteRPC RequestVote
   | RequestVoteResponseRPC RequestVoteResponse
+  deriving (Show)
 
 class RPCType a v where
   toRPC :: a -> RPC v
@@ -231,13 +249,13 @@ class RPCType a v where
 instance RPCType (AppendEntries v) v where
   toRPC = AppendEntriesRPC
 
-instance RPCType (AppendEntriesResponse) v where
+instance RPCType AppendEntriesResponse v where
   toRPC = AppendEntriesResponseRPC
 
-instance RPCType (RequestVote) v where
+instance RPCType RequestVote v where
   toRPC = RequestVoteRPC
 
-instance RPCType (RequestVoteResponse) v where
+instance RPCType RequestVoteResponse v where
   toRPC = RequestVoteResponseRPC
 
 rpcTerm :: RPC v -> Term
@@ -260,14 +278,14 @@ data AppendEntries v = AppendEntries
     -- ^ log entries to store (empty for heartbeat)
   , aeLeaderCommit :: Index
     -- ^ leader's commit index
-  }
+  } deriving (Show)
 
 data AppendEntriesResponse = AppendEntriesResponse
   { aerTerm :: Term
     -- ^ current term for leader to update itself
   , aerSuccess :: Bool
     -- ^ true if follower contained entry matching aePrevLogIndex and aePrevLogTerm
-  }
+  } deriving (Show)
 
 data RequestVote = RequestVote
   { rvTerm :: Term
@@ -278,11 +296,11 @@ data RequestVote = RequestVote
     -- ^ index of candidate's last log entry
   , rvLastLogTerm :: Term
     -- ^ term of candidate's last log entry
-  }
+  } deriving (Show)
 
 data RequestVoteResponse = RequestVoteResponse
   { rvrTerm :: Term
     -- ^ current term for candidate to update itself
   , rvrVoteGranted :: Bool
     -- ^ true means candidate recieved vote
-  }
+  } deriving (Show)
