@@ -171,7 +171,7 @@ unit_init_protocol = runScenario $ do
 
   nodeStates <- gets testNodeStates
 
-  liftIO $ print nodeStates
+  --liftIO $ print nodeStates
   -- Test that node0 is a leader
   liftIO $ HUnit.assertBool "Node0 has not become leader"
     (fromMaybe False $ isLeader . fst <$> Map.lookup node0 nodeStates)
@@ -190,6 +190,11 @@ checkCurrentLeader (RaftNodeState (NodeFollowerState FollowerState{..})) = fsCur
 checkCurrentLeader (RaftNodeState (NodeCandidateState _)) = NoLeader
 checkCurrentLeader (RaftNodeState (NodeLeaderState _)) = NoLeader
 
+getLastAppliedLog :: RaftNodeState v -> Index
+getLastAppliedLog (RaftNodeState (NodeFollowerState FollowerState{..})) = fsLastApplied
+getLastAppliedLog (RaftNodeState (NodeCandidateState CandidateState{..})) = csLastApplied
+getLastAppliedLog (RaftNodeState (NodeLeaderState LeaderState{..})) = lsLastApplied
+
 unit_append_entries_client_request :: IO ()
 unit_append_entries_client_request = runScenario $ do
   testInitLeader node0
@@ -200,10 +205,17 @@ unit_append_entries_client_request = runScenario $ do
   liftIO $ print persistentStates
   liftIO $ print raftStates
   -- Test node logs are of the right length
-  liftIO $ HUnit.assertBool "Node0 has not updated its logs"
+  liftIO $ HUnit.assertBool "Node0 has not appended logs"
     (fromMaybe False $ (/= 0) . Seq.length . unLog . psLog <$> Map.lookup node0 persistentStates)
-  liftIO $ HUnit.assertBool "Node1 has not updated its logs"
+  liftIO $ HUnit.assertBool "Node1 has not appended logs"
     (fromMaybe False $ (/= 0) . Seq.length . unLog . psLog <$> Map.lookup node1 persistentStates)
-  liftIO $ HUnit.assertBool "Node2 has not updated its logs"
+  liftIO $ HUnit.assertBool "Node2 has not appended logs"
     (fromMaybe False $ (/= 0) . Seq.length . unLog . psLog <$> Map.lookup node2 persistentStates)
+  -- Test node0 has committed their logs
+  liftIO $ HUnit.assertBool "Node0 has not committed logs"
+    (fromMaybe False $ (== 1) . getLastAppliedLog <$> Map.lookup node0 raftStates)
+  liftIO $ HUnit.assertBool "Node1 has committed logs"
+    (fromMaybe False $ (== 0) . getLastAppliedLog <$> Map.lookup node1 raftStates)
+  liftIO $ HUnit.assertBool "Node2 has committed logs"
+    (fromMaybe False $ (== 0) . getLastAppliedLog <$> Map.lookup node2 raftStates)
   -- Test all nodes have committed their logs
