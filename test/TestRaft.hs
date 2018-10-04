@@ -15,8 +15,17 @@ import qualified Data.Map.Merge.Lazy as Merge
 import qualified Data.Set as Set
 import qualified Test.Tasty.HUnit as HUnit
 
+import TestUtils
+
+import Raft.Action
+import Raft.Config
+import Raft.Event
 import Raft.Handle (handleEvent)
+import Raft.Log
 import Raft.Monad
+import Raft.NodeState hiding (isFollower, isCandidate, isLeader)
+import Raft.Persistent
+import Raft.RPC
 import Raft.Types
 
 -------------------

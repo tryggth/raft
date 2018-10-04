@@ -27,6 +27,13 @@ import qualified Debug.Trace as DT
 import qualified Data.Map as Map
 import qualified Data.Sequence as Seq
 
+import Raft.NodeState
+import Raft.RPC
+import Raft.Event
+import Raft.Action
+import Raft.Persistent
+import Raft.Config
+import Raft.Log
 import Raft.Monad
 import Raft.Types
 
@@ -120,7 +127,7 @@ handleTimeout (NodeCandidateState candidateState@CandidateState{..}) timeout =
 -- is live but that there is an election taking place.
 handleClientRequest :: ClientReqHandler 'Candidate v
 handleClientRequest (NodeCandidateState candidateState) (ClientReq clientId _) = do
-  tell [RedirectClient clientId NoLeader]
+  redirectClientToLeader clientId NoLeader
   pure (candidateResultState Noop candidateState)
 
 --------------------------------------------------------------------------------
