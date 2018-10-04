@@ -126,19 +126,24 @@ testHandleAction sender action = case action of
     pure ()
 
 printIfNode :: NodeId -> NodeId -> [Char] -> Scenario ()
-printIfNode nId nId' msg = do
+printIfNode nId nId' msg =
   when (nId == nId') $
     liftIO $ print $ show nId ++ " " ++ msg
 
+printIfNodes :: [NodeId] -> NodeId -> [Char] -> Scenario ()
+printIfNodes nIds nId' msg =
+  when (nId' `elem` nIds) $
+    liftIO $ print $ show nId' ++ " " ++ msg
+
 testHandleEvent :: NodeId -> Event TestValue -> Scenario ()
 testHandleEvent nodeId event = do
-  printIfNode node0 nodeId ("Received event: " ++ show event)
+  printIfNodes [node0] nodeId ("Received event: " ++ show event)
   (nodeConfig, nodeMessages, raftState, persistentState) <- getNodeInfo nodeId
   let (newRaftState, newPersistentState, actions) = handleEvent nodeConfig raftState persistentState event
   testUpdateState nodeId event newRaftState newPersistentState nodeMessages
-  printIfNode node0 nodeId ("New RaftState: " ++ show newRaftState)
-  printIfNode node0 nodeId ("New PersistentState: " ++ show newPersistentState)
-  printIfNode node0 nodeId ("Generated actions: " ++ show actions)
+  printIfNodes [node0] nodeId ("New RaftState: " ++ show newRaftState)
+  printIfNodes [node0] nodeId ("New PersistentState: " ++ show newPersistentState)
+  printIfNodes [node0] nodeId ("Generated actions: " ++ show actions)
   testHandleActions nodeId actions
 
 testUpdateState
@@ -203,21 +208,12 @@ unit_init_protocol :: IO ()
 unit_init_protocol = runScenario $ do
   testInitLeader node0
 
-  nodeStates <- gets testNodeStates
+  raftStates <- gets $ fmap fst . testNodeStates
 
-  --liftIO $ print nodeStates
   -- Test that node0 is a leader
-  liftIO $ HUnit.assertBool "Node0 has not become leader"
-    (fromMaybe False $ isLeader . fst <$> Map.lookup node0 nodeStates)
   -- And the rest of the nodes are followers
-  liftIO $ HUnit.assertBool "Node1 has not remained follower"
-    (fromMaybe False $ isFollower . fst <$> Map.lookup node1 nodeStates)
-  liftIO $ HUnit.assertBool "Node1 has not recognized node0 as leader"
-    (fromMaybe False $ (== CurrentLeader (LeaderId node0)) . checkCurrentLeader . fst <$> Map.lookup node1 nodeStates)
-  liftIO $ HUnit.assertBool "Node2 has not remained follower"
-    (fromMaybe False $ isFollower . fst <$> Map.lookup node2 nodeStates)
-  liftIO $ HUnit.assertBool "Node2 has not recognized node0 as leader"
-    (fromMaybe False $ (== CurrentLeader (LeaderId node0)) . checkCurrentLeader . fst <$> Map.lookup node2 nodeStates)
+  liftIO $ assertLeader raftStates [(node0, NoLeader), (node1, CurrentLeader (LeaderId node0)), (node2, CurrentLeader (LeaderId node0))]
+  liftIO $ assertNodeState raftStates [(node0, isLeader), (node1, isFollower), (node2, isFollower)]
 
 checkCurrentLeader :: RaftNodeState v -> CurrentLeader
 checkCurrentLeader (RaftNodeState (NodeFollowerState FollowerState{..})) = fsCurrentLeader
@@ -233,6 +229,17 @@ getCommittedLogIndex :: RaftNodeState v -> Index
 getCommittedLogIndex (RaftNodeState (NodeFollowerState FollowerState{..})) = fsCommitIndex
 getCommittedLogIndex (RaftNodeState (NodeCandidateState CandidateState{..})) = csCommitIndex
 getCommittedLogIndex (RaftNodeState (NodeLeaderState LeaderState{..})) = lsCommitIndex
+
+
+assertNodeState :: Map NodeId (RaftNodeState v) -> [(NodeId, RaftNodeState v -> Bool)] -> IO ()
+assertNodeState raftNodeStates =
+  mapM_ (\(nId, isNodeState) -> HUnit.assertBool (show nId ++ " should be in a different state")
+    (maybe False isNodeState (Map.lookup nId raftNodeStates)))
+
+assertLeader :: Map NodeId (RaftNodeState v) -> [(NodeId, CurrentLeader)] -> IO ()
+assertLeader raftNodeStates =
+  mapM_ (\(nId, leader) -> HUnit.assertBool (show nId ++ " should recognize " ++ show leader ++ " as its leader")
+    (maybe False ((== leader) . checkCurrentLeader) (Map.lookup nId raftNodeStates)))
 
 assertAppendedLogs :: Map NodeId (PersistentState v) -> [(NodeId, Int)] -> IO ()
 assertAppendedLogs persistentStates =
