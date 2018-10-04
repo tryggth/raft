@@ -147,24 +147,26 @@ handleEvent' raftHandler@RaftHandler{..} nodeConfig initNodeState persistentStat
     handleMessage (RPC sender rpc) = do
       -- If commitIndex > lastApplied: increment lastApplied, apply
       -- log[lastApplied] to state machine (Section 5.3)
-      newNodeState <-
-        if commitIndex > lastApplied
-          then incrLastApplied
-          else pure initNodeState
 
-      case rpc of
+      resState@(ResultState transition newNodeState) <- case rpc of
         AppendEntriesRPC appendEntries ->
-          handleAppendEntries newNodeState sender appendEntries
+          handleAppendEntries initNodeState sender appendEntries
         AppendEntriesResponseRPC appendEntriesResp ->
-          handleAppendEntriesResponse newNodeState sender appendEntriesResp
+          handleAppendEntriesResponse initNodeState sender appendEntriesResp
         RequestVoteRPC requestVote ->
-          handleRequestVote newNodeState sender requestVote
+          handleRequestVote initNodeState sender requestVote
         RequestVoteResponseRPC requestVoteResp ->
-          handleRequestVoteResponse newNodeState sender requestVoteResp
+          handleRequestVoteResponse initNodeState sender requestVoteResp
 
-    incrLastApplied :: TransitionM v (NodeState s)
-    incrLastApplied =
-      case initNodeState of
+      newestNodeState <-
+        if commitIndex > lastApplied
+          then incrLastApplied newNodeState
+          else pure newNodeState
+      pure $ ResultState transition newestNodeState
+
+    incrLastApplied :: NodeState s' -> TransitionM v (NodeState s')
+    incrLastApplied nodeState =
+      case nodeState of
         NodeFollowerState fs -> do
           applyLogEntry lastApplied
           let lastApplied = incrIndex (fsLastApplied fs)

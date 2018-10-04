@@ -167,20 +167,16 @@ testUpdateState nodeId _ raftState persistentState _
 
 testInitLeader :: NodeId -> Scenario ()
 testInitLeader nId =
-  -- When a follower times out
-  -- That follower becomes a leader
-  -- Other nodes get to know who is the leader
   testHandleEvent nId (Timeout ElectionTimeout)
 
 testClientRequest :: NodeId -> Scenario ()
-testClientRequest nId = do
+testClientRequest nId =
   testHandleEvent nId (ClientRequest (ClientReq client0 TestValue))
 
 testHeartbeat :: NodeId -> Scenario ()
 testHeartbeat sender = do
   nodeStates <- gets testNodeStates
   nIds <- gets testNodeIds
-  -- sender must be a leader
   let Just (raftState, persistentState) = Map.lookup sender nodeStates
   unless (isLeader raftState) $ panic $ toS (show sender ++ " must a be a leader to heartbeat")
   let Just entry@Entry{..} = lastLogEntry $ psLog persistentState
@@ -194,7 +190,7 @@ testHeartbeat sender = do
                         , aeLeaderCommit = lsCommitIndex
                         }
 
-  -- Send to all nodes
+  -- Broadcast AppendEntriesRPC
   mapM_ (flip testHandleEvent (Message (RPC sender (AppendEntriesRPC appendEntry))))
     (Set.filter (sender /=) nIds)
   where
@@ -215,8 +211,7 @@ unit_init_protocol = runScenario $ do
 
   raftStates <- gets $ fmap fst . testNodeStates
 
-  -- Test that node0 is a leader
-  -- And the rest of the nodes are followers
+  -- Test that node0 is a leader and the other nodes are followers
   liftIO $ assertLeader raftStates [(node0, NoLeader), (node1, CurrentLeader (LeaderId node0)), (node2, CurrentLeader (LeaderId node0))]
   liftIO $ assertNodeState raftStates [(node0, isLeader), (node1, isFollower), (node2, isFollower)]
 
@@ -238,7 +233,6 @@ unit_append_entries_client_request = runScenario $ do
 
   -- Test that node0 has applied the committed log, i.e. it has updated its
   -- state machine. Node1 and node2 haven't updated their state machines yet.
-
   liftIO $ assertSMEntries smEntries0 [(node0, 1), (node1, 0), (node2, 0)]
 
   -- -------------- HEARTBEAT 1 ---------------------
