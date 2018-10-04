@@ -18,7 +18,6 @@ module Raft.Follower (
 
 import Protolude
 
-import qualified Debug.Trace as DT
 import Control.Monad.Writer (tell)
 
 import Data.Sequence (Seq, takeWhileL)

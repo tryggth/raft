@@ -252,7 +252,6 @@ unit_append_entries_client_request = runScenario $ do
   liftIO $ assertSMEntries smEntries0 [(node0, 1), (node1, 0), (node2, 0)]
 
   -- -------------- HEARTBEAT 1 ---------------------
-  -- Leader heartbeats after receiving client request
   testHeartbeat node0
   ---------------------------------------------------
 
