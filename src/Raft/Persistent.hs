@@ -1,4 +1,4 @@
-
+{-# LANGUAGE MultiParamTypeClasses #-}
 
 module Raft.Persistent where
 
@@ -36,5 +36,3 @@ data PersistentState v = PersistentState
   , psLog :: Log v
     -- ^ log entries; each entry contains command for state machine
   } deriving (Show)
-
--- TODO: Typeclass for saving/loading persistent state

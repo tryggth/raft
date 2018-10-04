@@ -6,29 +6,30 @@ module Control.Concurrent.STM.Timer (
   newTimer
 ) where
 
-import Protolude
+import Protolude hiding (STM, ThreadId, threadDelay, myThreadId, atomically)
 
-import Control.Concurrent.STM
+import Control.Monad.Conc.Class
+import Control.Concurrent.Classy.STM
 
 import Numeric.Natural
 
-data Timer = Timer
-  { timerThread :: TMVar ThreadId
-  , timerLock :: TMVar ()
+data Timer m = Timer
+  { timerThread :: TMVar (STM m) (ThreadId m)
+  , timerLock :: TMVar (STM m) ()
   }
 
-waitTimer :: Timer -> IO ()
+waitTimer :: MonadConc m => Timer m -> m ()
 waitTimer (Timer _ lock) =
   atomically $ readTMVar lock
 
 -- | Starting a timer will only work if the timer is currently stopped
-startTimer :: Natural -> Timer -> IO ()
+startTimer :: MonadConc m => Natural -> Timer m -> m ()
 startTimer n (Timer tid lock) = do
   timerLock <- atomically $ tryTakeTMVar lock
   case timerLock of
     Nothing -> pure ()
     Just () ->
-      void $ forkIO $ do
+      void $ fork $ do
         threadId <- myThreadId
         atomically $ do
           _ <- tryTakeTMVar tid
@@ -38,8 +39,8 @@ startTimer n (Timer tid lock) = do
           putTMVar lock ()
           void $ takeTMVar tid
 
-newTimer :: IO Timer
+newTimer :: MonadConc m => m (Timer m)
 newTimer = do
-  timerThread <- newEmptyTMVarIO
-  timerLock <- newTMVarIO ()
+  timerThread <- atomically newEmptyTMVar
+  timerLock <- atomically (newTMVar ())
   pure $ Timer timerThread timerLock

@@ -65,6 +65,15 @@ leaderResultState transition lstate =
 data RaftNodeState v where
   RaftNodeState :: { unRaftNodeState :: NodeState s } -> RaftNodeState v
 
+initRaftNodeState :: RaftNodeState v
+initRaftNodeState =
+  RaftNodeState $
+    NodeFollowerState FollowerState
+      { fsCommitIndex = index0
+      , fsLastApplied = index0
+      , fsCurrentLeader = NoLeader
+      }
+
 deriving instance Show (RaftNodeState v)
 
 -- | The volatile state of a Raft Node
