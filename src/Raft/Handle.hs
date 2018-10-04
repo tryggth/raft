@@ -137,46 +137,57 @@ handleEvent' raftHandler@RaftHandler{..} nodeConfig initNodeState persistentStat
         ClientRequest crq -> handleClientRequest initNodeState crq
         Timeout tout -> handleTimeout initNodeState tout
   where
-    (lastApplied :: Index, commitIndex :: Index) =
-      case initNodeState of
-        NodeFollowerState fs -> (fsLastApplied fs, fsCommitIndex fs)
-        NodeCandidateState cs -> (csLastApplied cs, csCommitIndex cs)
-        NodeLeaderState ls -> (lsLastApplied ls, lsCommitIndex ls)
-
     handleMessage :: Message v -> TransitionM v (ResultState s v)
     handleMessage (RPC sender rpc) = do
       -- If commitIndex > lastApplied: increment lastApplied, apply
       -- log[lastApplied] to state machine (Section 5.3)
-      newNodeState <-
-        if commitIndex > lastApplied
-          then incrLastApplied
-          else pure initNodeState
 
-      case rpc of
+      resState@(ResultState transition newNodeState) <- case rpc of
         AppendEntriesRPC appendEntries ->
-          handleAppendEntries newNodeState sender appendEntries
+          handleAppendEntries initNodeState sender appendEntries
         AppendEntriesResponseRPC appendEntriesResp ->
-          handleAppendEntriesResponse newNodeState sender appendEntriesResp
+          handleAppendEntriesResponse initNodeState sender appendEntriesResp
         RequestVoteRPC requestVote ->
-          handleRequestVote newNodeState sender requestVote
+          handleRequestVote initNodeState sender requestVote
         RequestVoteResponseRPC requestVoteResp ->
-          handleRequestVoteResponse newNodeState sender requestVoteResp
+          handleRequestVoteResponse initNodeState sender requestVoteResp
 
-    incrLastApplied :: TransitionM v (NodeState s)
-    incrLastApplied =
-      case initNodeState of
+      newestNodeState <-
+        if commitIndex newNodeState > lastApplied newNodeState
+          then incrLastApplied newNodeState
+          else pure newNodeState
+      pure $ ResultState transition newestNodeState
+
+    incrLastApplied :: NodeState s' -> TransitionM v (NodeState s')
+    incrLastApplied nodeState =
+      case nodeState of
         NodeFollowerState fs -> do
-          applyLogEntry lastApplied
-          let lastApplied = incrIndex (fsLastApplied fs)
+          applyLogEntry (lastApplied nodeState)
+          let lastApplied' = incrIndex (fsLastApplied fs)
           pure $ NodeFollowerState $
-            fs { fsLastApplied = lastApplied }
+            fs { fsLastApplied = lastApplied' }
         NodeCandidateState cs -> do
-          applyLogEntry lastApplied
-          let lastApplied = incrIndex (csLastApplied cs)
+          applyLogEntry (lastApplied nodeState)
+          let lastApplied' = incrIndex (csLastApplied cs)
           pure $ NodeCandidateState $
-            cs { csLastApplied = lastApplied }
+            cs { csLastApplied = lastApplied' }
         NodeLeaderState ls -> do
-          applyLogEntry lastApplied
-          let lastApplied = incrIndex (lsLastApplied ls)
+          applyLogEntry (lastApplied nodeState)
+          let lastApplied' = incrIndex (lsLastApplied ls)
           pure $ NodeLeaderState $
-            ls { lsLastApplied = lastApplied }
+            ls { lsLastApplied = lastApplied' }
+
+    getLastAppliedAndCommitIndex :: NodeState s' -> (Index, Index)
+    getLastAppliedAndCommitIndex nodeState =
+      case nodeState of
+        NodeFollowerState fs -> (fsLastApplied fs, fsCommitIndex fs)
+        NodeCandidateState cs -> (csLastApplied cs, csCommitIndex cs)
+        NodeLeaderState ls -> (lsLastApplied ls, lsCommitIndex ls)
+
+    lastApplied :: NodeState s' -> Index
+    lastApplied = fst . getLastAppliedAndCommitIndex
+
+    commitIndex :: NodeState s' -> Index
+    commitIndex = snd . getLastAppliedAndCommitIndex
+
+

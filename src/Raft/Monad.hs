@@ -6,6 +6,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE RecordWildCards #-}
 
 module Raft.Monad where
 
@@ -160,7 +161,7 @@ applyLogEntry idx = do
   mLogEntry <- lookupLogEntry idx <$> gets psLog
   case mLogEntry of
     Nothing -> panic "Cannot apply non existent log entry to state machine"
-    Just logEntry -> tell [ApplyCommittedEntry logEntry]
+    Just logEntry -> tell [ApplyCommittedLogEntry logEntry]
 
 appendNewLogEntries :: Seq (Entry v) -> TransitionM v ()
 appendNewLogEntries newEntries =
@@ -217,3 +218,20 @@ isFollower :: RaftNodeState v -> Bool
 isFollower (RaftNodeState (NodeFollowerState _)) = True
 isFollower (RaftNodeState (NodeCandidateState _)) = False
 isFollower (RaftNodeState (NodeLeaderState _)) = False
+
+checkCurrentLeader :: RaftNodeState v -> CurrentLeader
+checkCurrentLeader (RaftNodeState (NodeFollowerState FollowerState{..})) = fsCurrentLeader
+checkCurrentLeader (RaftNodeState (NodeCandidateState _)) = NoLeader
+checkCurrentLeader (RaftNodeState (NodeLeaderState _)) = NoLeader
+
+getLastAppliedLog :: RaftNodeState v -> Index
+getLastAppliedLog (RaftNodeState (NodeFollowerState FollowerState{..})) = fsLastApplied
+getLastAppliedLog (RaftNodeState (NodeCandidateState CandidateState{..})) = csLastApplied
+getLastAppliedLog (RaftNodeState (NodeLeaderState LeaderState{..})) = lsLastApplied
+
+getCommittedLogIndex :: RaftNodeState v -> Index
+getCommittedLogIndex (RaftNodeState (NodeFollowerState FollowerState{..})) = fsCommitIndex
+getCommittedLogIndex (RaftNodeState (NodeCandidateState CandidateState{..})) = csCommitIndex
+getCommittedLogIndex (RaftNodeState (NodeLeaderState LeaderState{..})) = lsCommitIndex
+
+

@@ -57,7 +57,7 @@ data Entry v = Entry
   , entryValue :: v
     -- ^ command to update state machine
   , entryClientId :: ClientId
-  } deriving (Show)
+  } deriving (Show, Eq)
 
 data AppendEntryError
   = UnexpectedLogIndex Index Index
@@ -147,10 +147,10 @@ data PersistentState v = PersistentState
 --------------------------------------------------------------------------------
 
 newtype ClientId = ClientId NodeId
-  deriving Show
+  deriving (Show, Eq)
 
 newtype LeaderId = LeaderId { unLeaderId :: NodeId }
-  deriving Show
+  deriving (Show, Eq)
 
 data Timeout
   = ElectionTimeout
@@ -176,7 +176,7 @@ data Event v
 data CurrentLeader
   = CurrentLeader LeaderId
   | NoLeader
-  deriving (Show)
+  deriving (Show, Eq)
 
 data Action v
   = SendMessage NodeId (Message v)
@@ -185,7 +185,7 @@ data Action v
     -- ^ Send a unique message to specific nodes in parallel
   | Broadcast NodeIds (Message v)
     -- ^ Broadcast the same message to all nodes
-  | ApplyCommittedEntry (Entry v)
+  | ApplyCommittedLogEntry (Entry v)
     -- ^ Apply a replicated log entry to state machine
   | ResetTimeoutTimer Timeout Int
     -- ^ Reset a timeout timer
