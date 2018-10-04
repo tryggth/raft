@@ -122,7 +122,7 @@ testHandleAction sender action = case action of
     testState { testSMEntries
       = Map.insert sender (entry <| nodeLogEntries) (testSMEntries testState) })
   _ -> do
-    liftIO $ print $ "Action: " ++ show action
+    --liftIO $ print $ "Action: " ++ show action
     pure ()
 
 printIfNode :: NodeId -> NodeId -> [Char] -> Scenario ()
@@ -137,13 +137,13 @@ printIfNodes nIds nId' msg =
 
 testHandleEvent :: NodeId -> Event TestValue -> Scenario ()
 testHandleEvent nodeId event = do
-  printIfNodes [node0] nodeId ("Received event: " ++ show event)
+  printIfNodes [node1] nodeId ("Received event: " ++ show event)
   (nodeConfig, nodeMessages, raftState, persistentState) <- getNodeInfo nodeId
   let (newRaftState, newPersistentState, actions) = handleEvent nodeConfig raftState persistentState event
   testUpdateState nodeId event newRaftState newPersistentState nodeMessages
-  printIfNodes [node0] nodeId ("New RaftState: " ++ show newRaftState)
-  printIfNodes [node0] nodeId ("New PersistentState: " ++ show newPersistentState)
-  printIfNodes [node0] nodeId ("Generated actions: " ++ show actions)
+  printIfNodes [node1] nodeId ("New RaftState: " ++ show newRaftState)
+  --printIfNodes [node0] nodeId ("New PersistentState: " ++ show newPersistentState)
+  printIfNodes [node1] nodeId ("Generated actions: " ++ show actions)
   testHandleActions nodeId actions
 
 testUpdateState
@@ -231,6 +231,8 @@ unit_append_entries_client_request = runScenario $ do
   -- They will update their logs on the next heartbeat
   liftIO $ assertCommittedLogIndex raftStates0 [(node0, Index 1), (node1, Index 0), (node2, Index 0)]
 
+  liftIO $ assertAppliedLogIndex raftStates0 [(node0, Index 1), (node1, Index 0), (node2, Index 0)]
+
   -- Test that node0 has applied the committed log, i.e. it has updated its
   -- state machine. Node1 and node2 haven't updated their state machines yet.
   liftIO $ assertSMEntries smEntries0 [(node0, 1), (node1, 0), (node2, 0)]
@@ -239,7 +241,6 @@ unit_append_entries_client_request = runScenario $ do
   -- Leader heartbeats after receiving client request
   testHeartbeat node0
 
-  persistentStates1 <- gets $ fmap snd . testNodeStates
   raftStates1 <- gets $ fmap fst . testNodeStates
   smEntries1 <- gets testSMEntries
 
@@ -247,11 +248,21 @@ unit_append_entries_client_request = runScenario $ do
   -- Committed logs
   liftIO $ assertCommittedLogIndex raftStates1 [(node0, Index 1), (node1, Index 1), (node2, Index 1)]
   -- Applied committed logs
-  liftIO $ assertAppliedLogIndex raftStates1 [(node0, Index 1), (node1, Index 0), (node2, Index 0)]
-
+  liftIO $ assertAppliedLogIndex raftStates1 [(node0, Index 1), (node1, Index 1), (node2, Index 1)]
   -- Applied logs in nodes' state machines
-  -- TODO: Fix this assertion.
-  --liftIO $ assertSMEntries smEntries1 [(node0, 1), (node1, 1), (node2, 1)]
+  liftIO $ assertSMEntries smEntries1 [(node0, 1), (node1, 1), (node2, 1)]
+
+  -- -------------- HEARTBEAT 2 ---------------------
+  testHeartbeat node0
+  raftStates2 <- gets $ fmap fst . testNodeStates
+  smEntries2 <- gets testSMEntries
+  -- Committed logs
+  liftIO $ assertCommittedLogIndex raftStates2 [(node0, Index 1), (node1, Index 1), (node2, Index 1)]
+  -- Applied committed logs
+  liftIO $ assertAppliedLogIndex raftStates2 [(node0, Index 1), (node1, Index 1), (node2, Index 1)]
+  -- Applied logs in nodes' state machines
+  liftIO $ assertSMEntries smEntries2 [(node0, 1), (node1, 1), (node2, 1)]
+
 
 --------------------------------------------
 -- Assert utils

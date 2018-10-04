@@ -137,12 +137,6 @@ handleEvent' raftHandler@RaftHandler{..} nodeConfig initNodeState persistentStat
         ClientRequest crq -> handleClientRequest initNodeState crq
         Timeout tout -> handleTimeout initNodeState tout
   where
-    (lastApplied :: Index, commitIndex :: Index) =
-      case initNodeState of
-        NodeFollowerState fs -> (fsLastApplied fs, fsCommitIndex fs)
-        NodeCandidateState cs -> (csLastApplied cs, csCommitIndex cs)
-        NodeLeaderState ls -> (lsLastApplied ls, lsCommitIndex ls)
-
     handleMessage :: Message v -> TransitionM v (ResultState s v)
     handleMessage (RPC sender rpc) = do
       -- If commitIndex > lastApplied: increment lastApplied, apply
@@ -159,7 +153,7 @@ handleEvent' raftHandler@RaftHandler{..} nodeConfig initNodeState persistentStat
           handleRequestVoteResponse initNodeState sender requestVoteResp
 
       newestNodeState <-
-        if commitIndex > lastApplied
+        if commitIndex newNodeState > lastApplied newNodeState
           then incrLastApplied newNodeState
           else pure newNodeState
       pure $ ResultState transition newestNodeState
@@ -168,17 +162,32 @@ handleEvent' raftHandler@RaftHandler{..} nodeConfig initNodeState persistentStat
     incrLastApplied nodeState =
       case nodeState of
         NodeFollowerState fs -> do
-          applyLogEntry lastApplied
-          let lastApplied = incrIndex (fsLastApplied fs)
+          applyLogEntry (lastApplied nodeState)
+          let lastApplied' = incrIndex (fsLastApplied fs)
           pure $ NodeFollowerState $
-            fs { fsLastApplied = lastApplied }
+            fs { fsLastApplied = lastApplied' }
         NodeCandidateState cs -> do
-          applyLogEntry lastApplied
-          let lastApplied = incrIndex (csLastApplied cs)
+          applyLogEntry (lastApplied nodeState)
+          let lastApplied' = incrIndex (csLastApplied cs)
           pure $ NodeCandidateState $
-            cs { csLastApplied = lastApplied }
+            cs { csLastApplied = lastApplied' }
         NodeLeaderState ls -> do
-          applyLogEntry lastApplied
-          let lastApplied = incrIndex (lsLastApplied ls)
+          applyLogEntry (lastApplied nodeState)
+          let lastApplied' = incrIndex (lsLastApplied ls)
           pure $ NodeLeaderState $
-            ls { lsLastApplied = lastApplied }
+            ls { lsLastApplied = lastApplied' }
+
+    getLastAppliedAndCommitIndex :: NodeState s' -> (Index, Index)
+    getLastAppliedAndCommitIndex nodeState =
+      case nodeState of
+        NodeFollowerState fs -> (fsLastApplied fs, fsCommitIndex fs)
+        NodeCandidateState cs -> (csLastApplied cs, csCommitIndex cs)
+        NodeLeaderState ls -> (lsLastApplied ls, lsCommitIndex ls)
+
+    lastApplied :: NodeState s' -> Index
+    lastApplied = fst . getLastAppliedAndCommitIndex
+
+    commitIndex :: NodeState s' -> Index
+    commitIndex = snd . getLastAppliedAndCommitIndex
+
+
