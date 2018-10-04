@@ -141,14 +141,6 @@ getNodesInfo = do
 -- Handle actions and events
 ----------------------------------------
 
-class Monad m => RaftSM m v where
-  handleActions :: NodeId -> [Action v] -> m ()
-  handleAction :: NodeId -> Action v -> m ()
-
-instance RaftSM (StateT TestState IO) TestValue where
-  handleAction = testHandleAction
-  handleActions = testHandleActions
-
 testHandleActions :: NodeId -> [Action TestValue] -> Scenario ()
 testHandleActions sender =
   mapM_ (testHandleAction sender)
@@ -179,7 +171,7 @@ testHandleEvent nodeId event = do
   let (newRaftState, newPersistentState, actions) = handleEvent nodeConfig raftState persistentState event
   testUpdateState nodeId event newRaftState newPersistentState nodeMessages
   liftIO $ printIfNodes [node1] nodeId ("Generated actions: " ++ show actions)
-  handleActions nodeId actions
+  testHandleActions nodeId actions
 
 ----------------------------
 -- Test raft events
@@ -273,7 +265,6 @@ unit_new_leader = runScenario $ do
 
   liftIO $ assertNodeState raftStates [(node0, isRaftFollower), (node1, isRaftLeader), (node2, isRaftFollower)]
   liftIO $ assertLeader raftStates [(node0, CurrentLeader (LeaderId node1)), (node1, NoLeader), (node2, CurrentLeader (LeaderId node1))]
-
 
 --------------------------------------------
 -- Assert utils
