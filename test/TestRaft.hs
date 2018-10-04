@@ -19,6 +19,10 @@ import Raft.Handle (handleEvent)
 import Raft.Monad
 import Raft.Types
 
+-------------------
+-- Setup
+-------------------
+
 node0, node1, node2 :: NodeId
 node0 = "node0"
 node1 = "node1"
@@ -53,8 +57,13 @@ testConfig2 = NodeConfig
   , configHeartbeatTimeout = 20
   }
 
+------------------------------------
+-- Scenario Monad
+------------------------------------
+
 data TestValue = TestValue
   deriving (Show, Eq)
+
 
 data TestState = TestState
   { testNodeIds :: NodeIds
@@ -83,69 +92,6 @@ runScenario scenario = do
 
   evalStateT scenario initTestState
 
-getNodeInfo :: NodeId -> Scenario (NodeConfig, Seq (Message TestValue), RaftNodeState TestValue, PersistentState TestValue)
-getNodeInfo nId = do
-  nodeConfigs <- gets testNodeConfigs
-  nodeMessages <- gets testNodeMessages
-  nodeStates <- gets testNodeStates
-  let Just nodeInfo = Map.lookup nId nodeConfigs >>= \config ->
-                  Map.lookup nId nodeMessages >>= \msgs ->
-                  Map.lookup nId nodeStates >>= \(raftState, persistentState) ->
-                  pure (config, msgs, raftState, persistentState)
-  pure nodeInfo
-
-getNodesInfo :: Scenario (Map NodeId ((NodeConfig, Seq (Message TestValue)), (RaftNodeState TestValue, PersistentState TestValue)))
-getNodesInfo = do
-  nodeConfigs <- gets testNodeConfigs
-  nodeMessages <- gets testNodeMessages
-  nodeStates <- gets testNodeStates
-  pure $ nodeConfigs `combine` nodeMessages `combine` nodeStates
-
--- | Zip maps using function. Throws away items left and right
-zipMapWith :: Ord k => (a -> b -> c) -> Map k a -> Map k b -> Map k c
-zipMapWith f = Merge.merge Merge.dropMissing Merge.dropMissing (Merge.zipWithMatched (const f))
-
--- | Perform an inner join on maps (hence throws away items left and right)
-combine :: Ord a => Map a b -> Map a c -> Map a (b, c)
-combine = zipMapWith (,)
-
-testHandleActions :: NodeId -> [Action TestValue] -> Scenario ()
-testHandleActions sender =
-  mapM_ (testHandleAction sender)
-
-testHandleAction :: NodeId -> Action TestValue -> Scenario ()
-testHandleAction sender action = case action of
-  SendMessage nId msg -> testHandleEvent nId (Message msg)
-  Broadcast nIds msg -> mapM_ (`testHandleEvent` Message msg) nIds
-  ApplyCommittedLogEntry entry -> modify (\testState -> do
-    let nodeLogEntries = fromMaybe Seq.empty (Map.lookup sender (testSMEntries testState))
-    testState { testSMEntries
-      = Map.insert sender (entry <| nodeLogEntries) (testSMEntries testState) })
-  _ -> do
-    --liftIO $ print $ "Action: " ++ show action
-    pure ()
-
-printIfNode :: NodeId -> NodeId -> [Char] -> Scenario ()
-printIfNode nId nId' msg =
-  when (nId == nId') $
-    liftIO $ print $ show nId ++ " " ++ msg
-
-printIfNodes :: [NodeId] -> NodeId -> [Char] -> Scenario ()
-printIfNodes nIds nId' msg =
-  when (nId' `elem` nIds) $
-    liftIO $ print $ show nId' ++ " " ++ msg
-
-testHandleEvent :: NodeId -> Event TestValue -> Scenario ()
-testHandleEvent nodeId event = do
-  printIfNodes [node1] nodeId ("Received event: " ++ show event)
-  (nodeConfig, nodeMessages, raftState, persistentState) <- getNodeInfo nodeId
-  let (newRaftState, newPersistentState, actions) = handleEvent nodeConfig raftState persistentState event
-  testUpdateState nodeId event newRaftState newPersistentState nodeMessages
-  printIfNodes [node1] nodeId ("New RaftState: " ++ show newRaftState)
-  --printIfNodes [node0] nodeId ("New PersistentState: " ++ show newPersistentState)
-  printIfNodes [node1] nodeId ("Generated actions: " ++ show actions)
-  testHandleActions nodeId actions
-
 testUpdateState
   :: NodeId
   -> Event TestValue
@@ -164,6 +110,98 @@ testUpdateState nodeId _ raftState persistentState _
       -> testState
           { testNodeStates = Map.insert nodeId (raftState, persistentState) testNodeStates
           }
+
+getNodeInfo :: NodeId -> Scenario (NodeConfig, Seq (Message TestValue), RaftNodeState TestValue, PersistentState TestValue)
+getNodeInfo nId = do
+  nodeConfigs <- gets testNodeConfigs
+  nodeMessages <- gets testNodeMessages
+  nodeStates <- gets testNodeStates
+  let Just nodeInfo = Map.lookup nId nodeConfigs >>= \config ->
+                  Map.lookup nId nodeMessages >>= \msgs ->
+                  Map.lookup nId nodeStates >>= \(raftState, persistentState) ->
+                  pure (config, msgs, raftState, persistentState)
+  pure nodeInfo
+
+getNodesInfo :: Scenario (Map NodeId ((NodeConfig, Seq (Message TestValue)), (RaftNodeState TestValue, PersistentState TestValue)))
+getNodesInfo = do
+  nodeConfigs <- gets testNodeConfigs
+  nodeMessages <- gets testNodeMessages
+  nodeStates <- gets testNodeStates
+  pure $ nodeConfigs `combine` nodeMessages `combine` nodeStates
+
+
+------------------------------
+-- Test Utils
+------------------------------
+
+-- | Zip maps using function. Throws away items left and right
+zipMapWith :: Ord k => (a -> b -> c) -> Map k a -> Map k b -> Map k c
+zipMapWith f = Merge.merge Merge.dropMissing Merge.dropMissing (Merge.zipWithMatched (const f))
+
+-- | Perform an inner join on maps (hence throws away items left and right)
+combine :: Ord a => Map a b -> Map a c -> Map a (b, c)
+combine = zipMapWith (,)
+
+
+printIfNode :: (Show nId, Eq nId) => nId -> nId -> [Char] -> Scenario ()
+printIfNode nId nId' msg =
+  when (nId == nId') $
+    liftIO $ print $ show nId ++ " " ++ msg
+
+printIfNodes :: (Show nId, Eq nId) => [nId] -> nId -> [Char] -> Scenario ()
+printIfNodes nIds nId' msg =
+  when (nId' `elem` nIds) $
+    liftIO $ print $ show nId' ++ " " ++ msg
+
+----------------------------------------
+-- Handle actions and events
+----------------------------------------
+
+class Monad m => RaftSM m v where
+  handleActions :: NodeId -> [Action v] -> m ()
+  handleAction :: NodeId -> Action v -> m ()
+
+instance RaftSM (StateT TestState IO) TestValue where
+  handleAction = testHandleAction
+  handleActions = testHandleActions
+
+testHandleActions :: NodeId -> [Action TestValue] -> Scenario ()
+testHandleActions sender =
+  mapM_ (testHandleAction sender)
+
+testHandleAction :: NodeId -> Action TestValue -> Scenario ()
+testHandleAction sender action = case action of
+  SendMessage nId msg -> testHandleEvent nId (Message msg)
+  SendMessages msgs -> notImplemented
+  Broadcast nIds msg -> mapM_ (`testHandleEvent` Message msg) nIds
+  ApplyCommittedLogEntry entry -> testApplyCommittedLogEntry sender entry
+  RedirectClient clientId currentLeader -> notImplemented
+  RespondToClient clientId -> notImplemented
+  ResetTimeoutTimer _ _ -> noop -- Noop
+  where
+    noop = liftIO $ print $ "Action: " ++ show action
+
+testApplyCommittedLogEntry :: NodeId -> Entry TestValue -> Scenario ()
+testApplyCommittedLogEntry nId entry = modify (\testState -> do
+    let nodeLogEntries = fromMaybe Seq.empty (Map.lookup nId (testSMEntries testState))
+    testState { testSMEntries
+       = Map.insert nId (entry <| nodeLogEntries) (testSMEntries testState)
+      })
+
+testHandleEvent :: NodeId -> Event TestValue -> Scenario ()
+testHandleEvent nodeId event = do
+  printIfNodes [node1] nodeId ("Received event: " ++ show event)
+  (nodeConfig, nodeMessages, raftState, persistentState) <- getNodeInfo nodeId
+  let (newRaftState, newPersistentState, actions) = handleEvent nodeConfig raftState persistentState event
+  testUpdateState nodeId event newRaftState newPersistentState nodeMessages
+  --printIfNodes [node1] nodeId ("New RaftState: " ++ show newRaftState)
+  --printIfNodes [node0] nodeId ("New PersistentState: " ++ show newPersistentState)
+  printIfNodes [node1] nodeId ("Generated actions: " ++ show actions)
+  handleActions nodeId actions
+
+----------------------------
+-- Test raft events
+----------------------------
 
 testInitLeader :: NodeId -> Scenario ()
 testInitLeader nId =
