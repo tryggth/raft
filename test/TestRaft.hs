@@ -11,7 +11,6 @@ import Protolude
 import qualified Data.Sequence as Seq
 import Data.Sequence ((<|))
 import qualified Data.Map as Map
-import qualified Data.Map.Merge.Lazy as Merge
 import qualified Data.Set as Set
 import qualified Test.Tasty.HUnit as HUnit
 
@@ -23,7 +22,7 @@ import Raft.Event
 import Raft.Handle (handleEvent)
 import Raft.Log
 import Raft.Monad
-import Raft.NodeState hiding (isFollower, isCandidate, isLeader)
+import Raft.NodeState
 import Raft.Persistent
 import Raft.RPC
 import Raft.Types
@@ -138,30 +137,6 @@ getNodesInfo = do
   nodeStates <- gets testNodeStates
   pure $ nodeConfigs `combine` nodeMessages `combine` nodeStates
 
-
-------------------------------
--- Test Utils
-------------------------------
-
--- | Zip maps using function. Throws away items left and right
-zipMapWith :: Ord k => (a -> b -> c) -> Map k a -> Map k b -> Map k c
-zipMapWith f = Merge.merge Merge.dropMissing Merge.dropMissing (Merge.zipWithMatched (const f))
-
--- | Perform an inner join on maps (hence throws away items left and right)
-combine :: Ord a => Map a b -> Map a c -> Map a (b, c)
-combine = zipMapWith (,)
-
-
-printIfNode :: (Show nId, Eq nId) => nId -> nId -> [Char] -> Scenario ()
-printIfNode nId nId' msg =
-  when (nId == nId') $
-    liftIO $ print $ show nId ++ " " ++ msg
-
-printIfNodes :: (Show nId, Eq nId) => [nId] -> nId -> [Char] -> Scenario ()
-printIfNodes nIds nId' msg =
-  when (nId' `elem` nIds) $
-    liftIO $ print $ show nId' ++ " " ++ msg
-
 ----------------------------------------
 -- Handle actions and events
 ----------------------------------------
@@ -199,13 +174,11 @@ testApplyCommittedLogEntry nId entry = modify (\testState -> do
 
 testHandleEvent :: NodeId -> Event TestValue -> Scenario ()
 testHandleEvent nodeId event = do
-  printIfNodes [node1] nodeId ("Received event: " ++ show event)
+  liftIO $ printIfNodes [node1] nodeId ("Received event: " ++ show event)
   (nodeConfig, nodeMessages, raftState, persistentState) <- getNodeInfo nodeId
   let (newRaftState, newPersistentState, actions) = handleEvent nodeConfig raftState persistentState event
   testUpdateState nodeId event newRaftState newPersistentState nodeMessages
-  --printIfNodes [node1] nodeId ("New RaftState: " ++ show newRaftState)
-  --printIfNodes [node0] nodeId ("New PersistentState: " ++ show newPersistentState)
-  printIfNodes [node1] nodeId ("Generated actions: " ++ show actions)
+  liftIO $ printIfNodes [node1] nodeId ("Generated actions: " ++ show actions)
   handleActions nodeId actions
 
 ----------------------------
@@ -225,7 +198,7 @@ testHeartbeat sender = do
   nodeStates <- gets testNodeStates
   nIds <- gets testNodeIds
   let Just (raftState, persistentState) = Map.lookup sender nodeStates
-  unless (isLeader raftState) $ panic $ toS (show sender ++ " must a be a leader to heartbeat")
+  unless (isRaftLeader raftState) $ panic $ toS (show sender ++ " must a be a leader to heartbeat")
   let Just entry@Entry{..} = lastLogEntry $ psLog persistentState
   let LeaderState{..} = getInnerLeaderState raftState
   let appendEntry = AppendEntries
@@ -260,7 +233,7 @@ unit_init_protocol = runScenario $ do
 
   -- Test that node0 is a leader and the other nodes are followers
   liftIO $ assertLeader raftStates [(node0, NoLeader), (node1, CurrentLeader (LeaderId node0)), (node2, CurrentLeader (LeaderId node0))]
-  liftIO $ assertNodeState raftStates [(node0, isLeader), (node1, isFollower), (node2, isFollower)]
+  liftIO $ assertNodeState raftStates [(node0, isRaftLeader), (node1, isRaftFollower), (node2, isRaftFollower)]
 
 unit_append_entries_client_request :: IO ()
 unit_append_entries_client_request = runScenario $ do
@@ -299,7 +272,7 @@ unit_new_leader = runScenario $ do
   testHandleEvent node1 (Timeout ElectionTimeout)
   raftStates <- gets $ fmap fst . testNodeStates
 
-  liftIO $ assertNodeState raftStates [(node0, isFollower), (node1, isLeader), (node2, isFollower)]
+  liftIO $ assertNodeState raftStates [(node0, isRaftFollower), (node1, isRaftLeader), (node2, isRaftFollower)]
   liftIO $ assertLeader raftStates [(node0, CurrentLeader (LeaderId node1)), (node1, NoLeader), (node2, CurrentLeader (LeaderId node1))]
 
 
