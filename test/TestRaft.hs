@@ -252,17 +252,6 @@ unit_append_entries_client_request = runScenario $ do
   -- Applied logs in nodes' state machines
   liftIO $ assertSMEntries smEntries1 [(node0, 1), (node1, 1), (node2, 1)]
 
-  -- -------------- HEARTBEAT 2 ---------------------
-  testHeartbeat node0
-  raftStates2 <- gets $ fmap fst . testNodeStates
-  smEntries2 <- gets testSMEntries
-  -- Committed logs
-  liftIO $ assertCommittedLogIndex raftStates2 [(node0, Index 1), (node1, Index 1), (node2, Index 1)]
-  -- Applied committed logs
-  liftIO $ assertAppliedLogIndex raftStates2 [(node0, Index 1), (node1, Index 1), (node2, Index 1)]
-  -- Applied logs in nodes' state machines
-  liftIO $ assertSMEntries smEntries2 [(node0, 1), (node1, 1), (node2, 1)]
-
 
 --------------------------------------------
 -- Assert utils
