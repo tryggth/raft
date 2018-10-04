@@ -1,5 +1,6 @@
 
 module Control.Concurrent.STM.Timer (
+  Timer,
   waitTimer,
   startTimer,
   newTimer
@@ -8,6 +9,8 @@ module Control.Concurrent.STM.Timer (
 import Protolude
 
 import Control.Concurrent.STM
+
+import Numeric.Natural
 
 data Timer = Timer
   { timerThread :: TMVar ThreadId
@@ -19,7 +22,7 @@ waitTimer (Timer _ lock) =
   atomically $ readTMVar lock
 
 -- | Starting a timer will only work if the timer is currently stopped
-startTimer :: Int -> Timer -> IO ()
+startTimer :: Natural -> Timer -> IO ()
 startTimer n (Timer tid lock) = do
   timerLock <- atomically $ tryTakeTMVar lock
   case timerLock of
@@ -30,7 +33,7 @@ startTimer n (Timer tid lock) = do
         atomically $ do
           _ <- tryTakeTMVar tid
           putTMVar tid threadId
-        threadDelay n
+        threadDelay (fromIntegral n)
         atomically $ do
           putTMVar lock ()
           void $ takeTMVar tid

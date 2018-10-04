@@ -19,7 +19,14 @@ import qualified Debug.Trace as DT
 import qualified Raft.Follower as Follower
 import qualified Raft.Candidate as Candidate
 import qualified Raft.Leader as Leader
+
+import Raft.Action
+import Raft.Config
+import Raft.Event
 import Raft.Monad
+import Raft.NodeState
+import Raft.Persistent
+import Raft.RPC
 import Raft.Types
 
 -- | Main entry point for handling events
@@ -139,9 +146,6 @@ handleEvent' raftHandler@RaftHandler{..} nodeConfig initNodeState persistentStat
   where
     handleMessage :: Message v -> TransitionM v (ResultState s v)
     handleMessage (RPC sender rpc) = do
-      -- If commitIndex > lastApplied: increment lastApplied, apply
-      -- log[lastApplied] to state machine (Section 5.3)
-
       resState@(ResultState transition newNodeState) <- case rpc of
         AppendEntriesRPC appendEntries ->
           handleAppendEntries initNodeState sender appendEntries
@@ -152,6 +156,8 @@ handleEvent' raftHandler@RaftHandler{..} nodeConfig initNodeState persistentStat
         RequestVoteResponseRPC requestVoteResp ->
           handleRequestVoteResponse initNodeState sender requestVoteResp
 
+      -- If commitIndex > lastApplied: increment lastApplied, apply
+      -- log[lastApplied] to state machine (Section 5.3)
       newestNodeState <-
         if commitIndex newNodeState > lastApplied newNodeState
           then incrLastApplied newNodeState
@@ -189,5 +195,3 @@ handleEvent' raftHandler@RaftHandler{..} nodeConfig initNodeState persistentStat
 
     commitIndex :: NodeState s' -> Index
     commitIndex = snd . getLastAppliedAndCommitIndex
-
-

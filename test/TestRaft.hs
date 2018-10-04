@@ -15,8 +15,17 @@ import qualified Data.Map.Merge.Lazy as Merge
 import qualified Data.Set as Set
 import qualified Test.Tasty.HUnit as HUnit
 
+import TestUtils
+
+import Raft.Action
+import Raft.Config
+import Raft.Event
 import Raft.Handle (handleEvent)
+import Raft.Log
 import Raft.Monad
+import Raft.NodeState hiding (isFollower, isCandidate, isLeader)
+import Raft.Persistent
+import Raft.RPC
 import Raft.Types
 
 node0, node1, node2 :: NodeId
@@ -121,9 +130,7 @@ testHandleAction sender action = case action of
     let nodeLogEntries = fromMaybe Seq.empty (Map.lookup sender (testSMEntries testState))
     testState { testSMEntries
       = Map.insert sender (entry <| nodeLogEntries) (testSMEntries testState) })
-  _ -> do
-    --liftIO $ print $ "Action: " ++ show action
-    pure ()
+  _ -> pure ()
 
 printIfNode :: NodeId -> NodeId -> [Char] -> Scenario ()
 printIfNode nId nId' msg =

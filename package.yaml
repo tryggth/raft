@@ -34,13 +34,6 @@ default-extensions:
 
 library:
   source-dirs: src
-  exposed-modules:
-    - Raft.Handle
-    - Raft.Types
-    - Raft.Monad
-    - Raft.Leader
-    - Raft.Candidate
-    - Raft.Follower
 
 executables:
   raft-exe:

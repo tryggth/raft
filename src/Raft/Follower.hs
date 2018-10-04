@@ -23,6 +23,12 @@ import Control.Monad.Writer (tell)
 import Data.Sequence (Seq, takeWhileL)
 import Data.Set (singleton)
 
+import Raft.NodeState
+import Raft.RPC
+import Raft.Event
+import Raft.Persistent
+import Raft.Config
+import Raft.Log
 import Raft.Monad
 import Raft.Types
 
@@ -148,5 +154,5 @@ handleTimeout (NodeFollowerState fs) timeout =
 -- current leader by responding with the current leader id, if it knows of one.
 handleClientRequest :: ClientReqHandler 'Follower v
 handleClientRequest (NodeFollowerState fs) (ClientReq clientId _) = do
-  tell [RedirectClient clientId (fsCurrentLeader fs)]
+  redirectClientToLeader clientId (fsCurrentLeader fs)
   pure (followerResultState Noop fs)

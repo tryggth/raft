@@ -2,11 +2,6 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE KindSignatures #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE RecordWildCards #-}
 
 module Raft.Monad where
 
@@ -16,6 +11,13 @@ import Control.Monad.RWS
 import qualified Data.Set as Set
 import qualified Data.Map as Map
 
+import Raft.Action
+import Raft.Config
+import Raft.Event
+import Raft.Log
+import Raft.Persistent
+import Raft.NodeState
+import Raft.RPC
 import Raft.Types
 
 --------------------------------------------------------------------------------
@@ -43,77 +45,7 @@ type TimeoutHandler s v = NodeState s -> Timeout -> TransitionM v (ResultState s
 type ClientReqHandler s v = NodeState s -> ClientReq v -> TransitionM v (ResultState s v)
 
 --------------------------------------------------------------------------------
--- Transitions
---------------------------------------------------------------------------------
-
-data Mode
-  = Follower
-  | Candidate
-  | Leader
-  deriving (Show)
-
--- | All valid state transitions of a Raft node
-data Transition (init :: Mode) (res :: Mode) where
-  StartElection            :: Transition 'Follower 'Candidate
-  HigherTermFoundFollower  :: Transition 'Follower 'Follower
-
-  RestartElection          :: Transition 'Candidate 'Candidate
-  DiscoverLeader           :: Transition 'Candidate 'Follower
-  HigherTermFoundCandidate :: Transition 'Candidate 'Follower
-  BecomeLeader             :: Transition 'Candidate 'Leader
-
-  SendHeartbeat            :: Transition 'Leader 'Leader
-  DiscoverNewLeader        :: Transition 'Leader 'Follower
-  HigherTermFoundLeader    :: Transition 'Leader 'Follower
-
-  -- TODO Replace with specific transition names
-  Noop :: Transition init init
-
-deriving instance Show (Transition init res)
-
--- | The volatile state of a Raft Node
-data NodeState (a :: Mode) where
-  NodeFollowerState :: FollowerState -> NodeState 'Follower
-  NodeCandidateState :: CandidateState -> NodeState 'Candidate
-  NodeLeaderState :: LeaderState -> NodeState 'Leader
-
-deriving instance Show (NodeState v)
-
--- | Existential type hiding the result type of a transition
-data ResultState init v where
-  ResultState :: Transition init res -> NodeState res -> ResultState init v
-
-deriving instance Show (ResultState init v)
-
-followerResultState
-  :: Transition init 'Follower
-  -> FollowerState
-  -> ResultState init v
-followerResultState transition fstate =
-  ResultState transition (NodeFollowerState fstate)
-
-candidateResultState
-  :: Transition init 'Candidate
-  -> CandidateState
-  -> ResultState init v
-candidateResultState transition cstate =
-  ResultState transition (NodeCandidateState cstate)
-
-leaderResultState
-  :: Transition init 'Leader
-  -> LeaderState
-  -> ResultState init v
-leaderResultState transition lstate =
-  ResultState transition (NodeLeaderState lstate)
-
--- | Existential type hiding the internal node state
-data RaftNodeState v where
-  RaftNodeState :: NodeState s -> RaftNodeState v
-
-deriving instance Show (RaftNodeState v)
-
---------------------------------------------------------------------------------
--- DSL (TODO move to src/Raft/Action.hs)
+-- RWS Helpers
 --------------------------------------------------------------------------------
 
 -- | Helper for message actions
@@ -139,22 +71,20 @@ uniqueBroadcast msgs = do
   action <- SendMessages <$> mapM toRPCMessage msgs
   tell [action]
 
-incrementTerm :: TransitionM v ()
-incrementTerm = do
-  psNextTerm <- gets (incrTerm . psCurrentTerm)
-  modify $ \pstate ->
-    pstate { psCurrentTerm = psNextTerm }
-
 -- | Resets the election timeout.
 resetElectionTimeout :: TransitionM v ()
 resetElectionTimeout = do
-  t <- asks configElectionTimeout
+  t <- fromIntegral <$> asks configElectionTimeout
   tell [ResetTimeoutTimer ElectionTimeout t]
 
 resetHeartbeatTimeout :: TransitionM v ()
 resetHeartbeatTimeout = do
-  t <- asks configHeartbeatTimeout
+  t <- fromIntegral <$> asks configHeartbeatTimeout
   tell [ResetTimeoutTimer HeartbeatTimeout t]
+
+redirectClientToLeader :: ClientId -> CurrentLeader -> TransitionM v ()
+redirectClientToLeader clientId currentLeader =
+  tell [RedirectClient clientId currentLeader]
 
 applyLogEntry :: Index -> TransitionM v ()
 applyLogEntry idx = do
@@ -162,6 +92,12 @@ applyLogEntry idx = do
   case mLogEntry of
     Nothing -> panic "Cannot apply non existent log entry to state machine"
     Just logEntry -> tell [ApplyCommittedLogEntry logEntry]
+
+incrementTerm :: TransitionM v ()
+incrementTerm = do
+  psNextTerm <- gets (incrTerm . psCurrentTerm)
+  modify $ \pstate ->
+    pstate { psCurrentTerm = psNextTerm }
 
 appendNewLogEntries :: Seq (Entry v) -> TransitionM v ()
 appendNewLogEntries newEntries =
@@ -203,35 +139,3 @@ updateElectionTimeoutCandidateState commitIndex lastApplied = do
     selfNodeId <- asks configNodeId
     modify $ \pstate ->
       pstate { psVotedFor = Just selfNodeId }
-
-isLeader :: RaftNodeState v -> Bool
-isLeader (RaftNodeState (NodeFollowerState _)) = False
-isLeader (RaftNodeState (NodeCandidateState _)) = False
-isLeader (RaftNodeState (NodeLeaderState _)) = True
-
-isCandidate :: RaftNodeState v -> Bool
-isCandidate (RaftNodeState (NodeFollowerState _)) = False
-isCandidate (RaftNodeState (NodeCandidateState _)) = True
-isCandidate (RaftNodeState (NodeLeaderState _)) = False
-
-isFollower :: RaftNodeState v -> Bool
-isFollower (RaftNodeState (NodeFollowerState _)) = True
-isFollower (RaftNodeState (NodeCandidateState _)) = False
-isFollower (RaftNodeState (NodeLeaderState _)) = False
-
-checkCurrentLeader :: RaftNodeState v -> CurrentLeader
-checkCurrentLeader (RaftNodeState (NodeFollowerState FollowerState{..})) = fsCurrentLeader
-checkCurrentLeader (RaftNodeState (NodeCandidateState _)) = NoLeader
-checkCurrentLeader (RaftNodeState (NodeLeaderState _)) = NoLeader
-
-getLastAppliedLog :: RaftNodeState v -> Index
-getLastAppliedLog (RaftNodeState (NodeFollowerState FollowerState{..})) = fsLastApplied
-getLastAppliedLog (RaftNodeState (NodeCandidateState CandidateState{..})) = csLastApplied
-getLastAppliedLog (RaftNodeState (NodeLeaderState LeaderState{..})) = lsLastApplied
-
-getCommittedLogIndex :: RaftNodeState v -> Index
-getCommittedLogIndex (RaftNodeState (NodeFollowerState FollowerState{..})) = fsCommitIndex
-getCommittedLogIndex (RaftNodeState (NodeCandidateState CandidateState{..})) = csCommitIndex
-getCommittedLogIndex (RaftNodeState (NodeLeaderState LeaderState{..})) = lsCommitIndex
-
-
