@@ -119,6 +119,13 @@ testUpdateState nodeId _ raftState persistentState _
           { testNodeStates = Map.insert nodeId (raftState, persistentState) testNodeStates
           }
 
+testApplyCommittedLogEntry :: NodeId -> Entry TestValue -> Scenario ()
+testApplyCommittedLogEntry nId entry = modify (\testState -> do
+    let nodeLogEntries = fromMaybe Seq.empty (Map.lookup nId (testSMEntries testState))
+    testState { testSMEntries
+       = Map.insert nId (entry <| nodeLogEntries) (testSMEntries testState)
+      })
+
 getNodeInfo :: NodeId -> Scenario (NodeConfig, Seq (Message TestValue), RaftNodeState TestValue, PersistentState TestValue)
 getNodeInfo nId = do
   nodeConfigs <- gets testNodeConfigs
@@ -153,16 +160,9 @@ testHandleAction sender action = case action of
   ApplyCommittedLogEntry entry -> testApplyCommittedLogEntry sender entry
   RedirectClient clientId currentLeader -> notImplemented
   RespondToClient clientId -> notImplemented
-  ResetTimeoutTimer _ _ -> noop -- Noop
+  ResetTimeoutTimer _ _ -> noop
   where
     noop = liftIO $ print $ "Action: " ++ show action
-
-testApplyCommittedLogEntry :: NodeId -> Entry TestValue -> Scenario ()
-testApplyCommittedLogEntry nId entry = modify (\testState -> do
-    let nodeLogEntries = fromMaybe Seq.empty (Map.lookup nId (testSMEntries testState))
-    testState { testSMEntries
-       = Map.insert nId (entry <| nodeLogEntries) (testSMEntries testState)
-      })
 
 testHandleEvent :: NodeId -> Event TestValue -> Scenario ()
 testHandleEvent nodeId event = do
