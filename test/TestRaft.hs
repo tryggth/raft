@@ -195,12 +195,17 @@ testHeartbeat sender = do
                         }
 
   -- Send to all nodes
-  mapM_ (flip testHandleEvent (Message (RPC sender (AppendEntriesRPC appendEntry)))) (Set.filter (sender /=) nIds)
+  mapM_ (flip testHandleEvent (Message (RPC sender (AppendEntriesRPC appendEntry))))
+    (Set.filter (sender /=) nIds)
   where
     getInnerLeaderState :: RaftNodeState v -> LeaderState
     getInnerLeaderState nodeState = case nodeState of
       (RaftNodeState (NodeLeaderState leaderState)) -> leaderState
       _ -> panic "Node must be a leader"
+
+-----------------------------------------
+-- Unit tests
+-----------------------------------------
 
 -- When the protocol starts, every node is a follower
 -- One of these followers must become a leader
@@ -214,52 +219,6 @@ unit_init_protocol = runScenario $ do
   -- And the rest of the nodes are followers
   liftIO $ assertLeader raftStates [(node0, NoLeader), (node1, CurrentLeader (LeaderId node0)), (node2, CurrentLeader (LeaderId node0))]
   liftIO $ assertNodeState raftStates [(node0, isLeader), (node1, isFollower), (node2, isFollower)]
-
-checkCurrentLeader :: RaftNodeState v -> CurrentLeader
-checkCurrentLeader (RaftNodeState (NodeFollowerState FollowerState{..})) = fsCurrentLeader
-checkCurrentLeader (RaftNodeState (NodeCandidateState _)) = NoLeader
-checkCurrentLeader (RaftNodeState (NodeLeaderState _)) = NoLeader
-
-getLastAppliedLog :: RaftNodeState v -> Index
-getLastAppliedLog (RaftNodeState (NodeFollowerState FollowerState{..})) = fsLastApplied
-getLastAppliedLog (RaftNodeState (NodeCandidateState CandidateState{..})) = csLastApplied
-getLastAppliedLog (RaftNodeState (NodeLeaderState LeaderState{..})) = lsLastApplied
-
-getCommittedLogIndex :: RaftNodeState v -> Index
-getCommittedLogIndex (RaftNodeState (NodeFollowerState FollowerState{..})) = fsCommitIndex
-getCommittedLogIndex (RaftNodeState (NodeCandidateState CandidateState{..})) = csCommitIndex
-getCommittedLogIndex (RaftNodeState (NodeLeaderState LeaderState{..})) = lsCommitIndex
-
-
-assertNodeState :: Map NodeId (RaftNodeState v) -> [(NodeId, RaftNodeState v -> Bool)] -> IO ()
-assertNodeState raftNodeStates =
-  mapM_ (\(nId, isNodeState) -> HUnit.assertBool (show nId ++ " should be in a different state")
-    (maybe False isNodeState (Map.lookup nId raftNodeStates)))
-
-assertLeader :: Map NodeId (RaftNodeState v) -> [(NodeId, CurrentLeader)] -> IO ()
-assertLeader raftNodeStates =
-  mapM_ (\(nId, leader) -> HUnit.assertBool (show nId ++ " should recognize " ++ show leader ++ " as its leader")
-    (maybe False ((== leader) . checkCurrentLeader) (Map.lookup nId raftNodeStates)))
-
-assertAppendedLogs :: Map NodeId (PersistentState v) -> [(NodeId, Int)] -> IO ()
-assertAppendedLogs persistentStates =
-  mapM_ (\(nId, len) -> HUnit.assertBool (show nId ++ " should have appended " ++ show len ++ " logs")
-    (maybe False ((== len) . Seq.length . unLog . psLog) (Map.lookup nId persistentStates)))
-
-assertCommittedLogIndex :: Map NodeId (RaftNodeState v) -> [(NodeId, Index)] -> IO ()
-assertCommittedLogIndex raftNodeStates =
-  mapM_ (\(nId, idx) -> HUnit.assertBool (show nId ++ " should have " ++ show idx ++ " as its last committed index")
-    (maybe False ((== idx) . getCommittedLogIndex) (Map.lookup nId raftNodeStates)))
-
-assertAppliedLogIndex :: Map NodeId (RaftNodeState v) -> [(NodeId, Index)] -> IO ()
-assertAppliedLogIndex raftNodeStates =
-  mapM_ (\(nId, idx) -> HUnit.assertBool (show nId ++ " should have " ++ show idx ++ " as its last applied index")
-    (maybe False ((== idx) . getLastAppliedLog) (Map.lookup nId raftNodeStates)))
-
-assertSMEntries :: Map NodeId (Entries v) -> [(NodeId, Int)] -> IO ()
-assertSMEntries smEntries =
-  mapM_ (\(nId, len) -> HUnit.assertBool (show nId ++ " should have applied " ++ show len ++ " logs in its state machine")
-    (maybe (len == 0) ((== len) . Seq.length) (Map.lookup nId smEntries)))
 
 unit_append_entries_client_request :: IO ()
 unit_append_entries_client_request = runScenario $ do
@@ -299,3 +258,37 @@ unit_append_entries_client_request = runScenario $ do
   -- Applied logs in nodes' state machines
   -- TODO: Fix this assertion.
   --liftIO $ assertSMEntries smEntries1 [(node0, 1), (node1, 1), (node2, 1)]
+
+--------------------------------------------
+-- Assert utils
+--------------------------------------------
+
+assertNodeState :: Map NodeId (RaftNodeState v) -> [(NodeId, RaftNodeState v -> Bool)] -> IO ()
+assertNodeState raftNodeStates =
+  mapM_ (\(nId, isNodeState) -> HUnit.assertBool (show nId ++ " should be in a different state")
+    (maybe False isNodeState (Map.lookup nId raftNodeStates)))
+
+assertLeader :: Map NodeId (RaftNodeState v) -> [(NodeId, CurrentLeader)] -> IO ()
+assertLeader raftNodeStates =
+  mapM_ (\(nId, leader) -> HUnit.assertBool (show nId ++ " should recognize " ++ show leader ++ " as its leader")
+    (maybe False ((== leader) . checkCurrentLeader) (Map.lookup nId raftNodeStates)))
+
+assertAppendedLogs :: Map NodeId (PersistentState v) -> [(NodeId, Int)] -> IO ()
+assertAppendedLogs persistentStates =
+  mapM_ (\(nId, len) -> HUnit.assertBool (show nId ++ " should have appended " ++ show len ++ " logs")
+    (maybe False ((== len) . Seq.length . unLog . psLog) (Map.lookup nId persistentStates)))
+
+assertCommittedLogIndex :: Map NodeId (RaftNodeState v) -> [(NodeId, Index)] -> IO ()
+assertCommittedLogIndex raftNodeStates =
+  mapM_ (\(nId, idx) -> HUnit.assertBool (show nId ++ " should have " ++ show idx ++ " as its last committed index")
+    (maybe False ((== idx) . getCommittedLogIndex) (Map.lookup nId raftNodeStates)))
+
+assertAppliedLogIndex :: Map NodeId (RaftNodeState v) -> [(NodeId, Index)] -> IO ()
+assertAppliedLogIndex raftNodeStates =
+  mapM_ (\(nId, idx) -> HUnit.assertBool (show nId ++ " should have " ++ show idx ++ " as its last applied index")
+    (maybe False ((== idx) . getLastAppliedLog) (Map.lookup nId raftNodeStates)))
+
+assertSMEntries :: Map NodeId (Entries v) -> [(NodeId, Int)] -> IO ()
+assertSMEntries smEntries =
+  mapM_ (\(nId, len) -> HUnit.assertBool (show nId ++ " should have applied " ++ show len ++ " logs in its state machine")
+    (maybe (len == 0) ((== len) . Seq.length) (Map.lookup nId smEntries)))
