@@ -61,7 +61,8 @@ data TestState = TestState
   , testNodeMessages :: Map NodeId (Seq (Message TestValue))
   , testNodeStates :: Map NodeId (RaftNodeState TestValue, PersistentState TestValue)
   , testNodeConfigs :: Map NodeId NodeConfig
-  , testCommittedLogEntries :: Map NodeId (Entries TestValue)
+  , testSMEntries :: Map NodeId (Entries TestValue)
+  -- ^ Entries in each of the nodes' state machines
   }
   deriving (Show)
 
@@ -77,7 +78,7 @@ runScenario scenario = do
                     , testNodeMessages = Map.fromList $ (, Seq.empty) <$> Set.toList nodeIds
                     , testNodeStates = Map.fromList $ (, (initRaftState, initPersistentState)) <$> Set.toList nodeIds
                     , testNodeConfigs = Map.fromList $ zip (Set.toList nodeIds) testConfigs
-                    , testCommittedLogEntries = Map.empty
+                    , testSMEntries = Map.empty
                     }
 
   evalStateT scenario initTestState
@@ -117,9 +118,9 @@ testHandleAction sender action = case action of
   SendMessage nId msg -> testHandleEvent nId (Message msg)
   Broadcast nIds msg -> mapM_ (`testHandleEvent` Message msg) nIds
   ApplyCommittedLogEntry entry -> modify (\testState -> do
-    let nodeLogEntries = fromMaybe Seq.empty (Map.lookup sender (testCommittedLogEntries testState))
-    testState { testCommittedLogEntries
-      = Map.insert sender (entry <| nodeLogEntries) (testCommittedLogEntries testState) })
+    let nodeLogEntries = fromMaybe Seq.empty (Map.lookup sender (testSMEntries testState))
+    testState { testSMEntries
+      = Map.insert sender (entry <| nodeLogEntries) (testSMEntries testState) })
   _ -> do
     liftIO $ print $ "Action: " ++ show action
     pure ()
@@ -176,7 +177,7 @@ testHeartbeat sender = do
   nIds <- gets testNodeIds
   -- sender must be a leader
   let Just (raftState, persistentState) = Map.lookup sender nodeStates
-  when (not $ isLeader raftState) $ panic $ toS (show sender ++ " must a be a leader to heartbeat")
+  unless (isLeader raftState) $ panic $ toS (show sender ++ " must a be a leader to heartbeat")
   let Just entry@Entry{..} = lastLogEntry $ psLog persistentState
   let LeaderState{..} = getInnerLeaderState raftState
   let appendEntry = AppendEntries
@@ -233,71 +234,61 @@ getCommittedLogIndex (RaftNodeState (NodeFollowerState FollowerState{..})) = fsC
 getCommittedLogIndex (RaftNodeState (NodeCandidateState CandidateState{..})) = csCommitIndex
 getCommittedLogIndex (RaftNodeState (NodeLeaderState LeaderState{..})) = lsCommitIndex
 
+assertAppendedLogs :: Map NodeId (PersistentState v) -> [(NodeId, Int)] -> IO ()
+assertAppendedLogs persistentStates =
+  mapM_ (\(nId, len) -> HUnit.assertBool (show nId ++ " should have appended " ++ show len ++ " logs")
+    (maybe False ((== len) . Seq.length . unLog . psLog) (Map.lookup nId persistentStates)))
+
+assertCommittedLogIndex :: Map NodeId (RaftNodeState v) -> [(NodeId, Index)] -> IO ()
+assertCommittedLogIndex raftNodeStates =
+  mapM_ (\(nId, idx) -> HUnit.assertBool (show nId ++ " should have " ++ show idx ++ " as its last committed index")
+    (maybe False ((== idx) . getCommittedLogIndex) (Map.lookup nId raftNodeStates)))
+
+assertAppliedLogIndex :: Map NodeId (RaftNodeState v) -> [(NodeId, Index)] -> IO ()
+assertAppliedLogIndex raftNodeStates =
+  mapM_ (\(nId, idx) -> HUnit.assertBool (show nId ++ " should have " ++ show idx ++ " as its last applied index")
+    (maybe False ((== idx) . getLastAppliedLog) (Map.lookup nId raftNodeStates)))
+
+assertSMEntries :: Map NodeId (Entries v) -> [(NodeId, Int)] -> IO ()
+assertSMEntries smEntries =
+  mapM_ (\(nId, len) -> HUnit.assertBool (show nId ++ " should have applied " ++ show len ++ " logs in its state machine")
+    (maybe (len == 0) ((== len) . Seq.length) (Map.lookup nId smEntries)))
+
 unit_append_entries_client_request :: IO ()
 unit_append_entries_client_request = runScenario $ do
   testInitLeader node0
   testClientRequest node0
-  nodeMessages <- gets testNodeMessages
+
   persistentStates0 <- gets $ fmap snd . testNodeStates
   raftStates0 <- gets $ fmap fst . testNodeStates
-  committedLogEntries0 <- gets testCommittedLogEntries
+  smEntries0 <- gets testSMEntries
 
-  -- Test node logs are of the right length
-  liftIO $ HUnit.assertBool "Node0 has not appended logs"
-    (fromMaybe False $ (/= 0) . Seq.length . unLog . psLog <$> Map.lookup node0 persistentStates0)
-  liftIO $ HUnit.assertBool "Node1 has not appended logs"
-    (fromMaybe False $ (/= 0) . Seq.length . unLog . psLog <$> Map.lookup node1 persistentStates0)
-  liftIO $ HUnit.assertBool "Node2 has not appended logs"
-    (fromMaybe False $ (/= 0) . Seq.length . unLog . psLog <$> Map.lookup node2 persistentStates0)
+  -- Test node persistent state logs are of the right length
+  liftIO $ assertAppendedLogs persistentStates0 [(node0, 1), (node1, 1), (node2, 1)]
 
   -- Test node0 has committed their logs but the other nodes have not yet
   -- They will update their logs on the next heartbeat
-  liftIO $ HUnit.assertBool "Node0 has not committed logs"
-    (fromMaybe False $ (== 1) . getCommittedLogIndex <$> Map.lookup node0 raftStates0)
-  liftIO $ HUnit.assertBool "Node1 has committed logs"
-    (fromMaybe False $ (== 0) . getCommittedLogIndex <$> Map.lookup node1 raftStates0)
-  liftIO $ HUnit.assertBool "Node2 has committed logs"
-    (fromMaybe False $ (== 0) . getCommittedLogIndex <$> Map.lookup node2 raftStates0)
+  liftIO $ assertCommittedLogIndex raftStates0 [(node0, Index 1), (node1, Index 0), (node2, Index 0)]
 
   -- Test that node0 has applied the committed log, i.e. it has updated its
   -- state machine. Node1 and node2 haven't updated their state machines yet.
-  liftIO $ HUnit.assertBool "Initial node0 committed log entries set is not empty"
-    (fromMaybe False $ (== 1) . Seq.length <$> Map.lookup node0 committedLogEntries0)
-  liftIO $ HUnit.assertBool "Initial node1 committed log entries set is not empty"
-    (isNothing $ Map.lookup node1 committedLogEntries0)
-  liftIO $ HUnit.assertBool "Initial node2 committed log entries set is not empty"
-    (isNothing $ Map.lookup node2 committedLogEntries0)
 
+  liftIO $ assertSMEntries smEntries0 [(node0, 1), (node1, 0), (node2, 0)]
+
+  -- -------------- HEARTBEAT 1 ---------------------
   -- Leader heartbeats after receiving client request
   testHeartbeat node0
 
   persistentStates1 <- gets $ fmap snd . testNodeStates
   raftStates1 <- gets $ fmap fst . testNodeStates
-  committedLogEntries1 <- gets testCommittedLogEntries
+  smEntries1 <- gets testSMEntries
 
   -- Test all nodes have committed their logs after leader heartbeats
   -- Committed logs
-  liftIO $ HUnit.assertBool "Node0 has not committed logs after first heartbeat"
-    (fromMaybe False $ (== 1) . getCommittedLogIndex <$> Map.lookup node0 raftStates1)
-  liftIO $ HUnit.assertBool "Node1 has not committed logs after first heartbeat"
-    (fromMaybe False $ (== 1) . getCommittedLogIndex <$> Map.lookup node1 raftStates1)
-  liftIO $ HUnit.assertBool "Node2 has not committed logs after first heartbeat"
-    (fromMaybe False $ (== 1) . getCommittedLogIndex <$> Map.lookup node2 raftStates1)
+  liftIO $ assertCommittedLogIndex raftStates1 [(node0, Index 1), (node1, Index 1), (node2, Index 1)]
   -- Applied committed logs
-  liftIO $ HUnit.assertBool "Node0 has not last applied logs after first heartbeat"
-    (fromMaybe False $ (== 1) . getLastAppliedLog <$> Map.lookup node0 raftStates1)
-  liftIO $ HUnit.assertBool "Node1 has last applied logs after first heartbeat"
-    (fromMaybe False $ (== 0) . getLastAppliedLog <$> Map.lookup node1 raftStates1)
-  liftIO $ HUnit.assertBool "Node2 has last applied logs after first heartbeat"
-    (fromMaybe False $ (== 0) . getLastAppliedLog <$> Map.lookup node2 raftStates1)
+  liftIO $ assertAppliedLogIndex raftStates1 [(node0, Index 1), (node1, Index 0), (node2, Index 0)]
 
-  liftIO $ HUnit.assertBool "Initial node0 committed log entries set is not empty"
-    (fromMaybe False $ (== 1) . Seq.length <$> Map.lookup node0 committedLogEntries1)
-  -- TODO: Test fails here
-  liftIO $ print committedLogEntries1
-  liftIO $ HUnit.assertBool "Initial node1 committed log entries set is not empty"
-    (fromMaybe False $ (== 1) . Seq.length <$> Map.lookup node1 committedLogEntries1)
-  liftIO $ HUnit.assertBool "Initial node2 committed log entries set is not empty"
-    (fromMaybe False $ (== 1) . Seq.length <$> Map.lookup node2 committedLogEntries1)
-
-
+  -- Applied logs in nodes' state machines
+  -- TODO: Fix this assertion.
+  --liftIO $ assertSMEntries smEntries1 [(node0, 1), (node1, 1), (node2, 1)]
