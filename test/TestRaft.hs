@@ -264,40 +264,43 @@ unit_init_protocol = runScenario $ do
 
 unit_append_entries_client_request :: IO ()
 unit_append_entries_client_request = runScenario $ do
+  ---------------------------------
   testInitLeader node0
   testClientRequest node0
+  ---------------------------------
 
   persistentStates0 <- gets $ fmap snd . testNodeStates
   raftStates0 <- gets $ fmap fst . testNodeStates
   smEntries0 <- gets testSMEntries
 
-  -- Test node persistent state logs are of the right length
   liftIO $ assertAppendedLogs persistentStates0 [(node0, 1), (node1, 1), (node2, 1)]
-
-  -- Test node0 has committed their logs but the other nodes have not yet
-  -- They will update their logs on the next heartbeat
   liftIO $ assertCommittedLogIndex raftStates0 [(node0, Index 1), (node1, Index 0), (node2, Index 0)]
-
   liftIO $ assertAppliedLogIndex raftStates0 [(node0, Index 1), (node1, Index 0), (node2, Index 0)]
-
-  -- Test that node0 has applied the committed log, i.e. it has updated its
-  -- state machine. Node1 and node2 haven't updated their state machines yet.
   liftIO $ assertSMEntries smEntries0 [(node0, 1), (node1, 0), (node2, 0)]
 
   -- -------------- HEARTBEAT 1 ---------------------
   -- Leader heartbeats after receiving client request
   testHeartbeat node0
+  ---------------------------------------------------
 
+  persistentStates1 <- gets $ fmap snd . testNodeStates
   raftStates1 <- gets $ fmap fst . testNodeStates
   smEntries1 <- gets testSMEntries
 
-  -- Test all nodes have committed their logs after leader heartbeats
-  -- Committed logs
+  -- Test all nodes have appended, committed and applied their logs
+  liftIO $ assertAppendedLogs persistentStates1 [(node0, 1), (node1, 1),(node2, 1)]
   liftIO $ assertCommittedLogIndex raftStates1 [(node0, Index 1), (node1, Index 1), (node2, Index 1)]
-  -- Applied committed logs
   liftIO $ assertAppliedLogIndex raftStates1 [(node0, Index 1), (node1, Index 1), (node2, Index 1)]
-  -- Applied logs in nodes' state machines
   liftIO $ assertSMEntries smEntries1 [(node0, 1), (node1, 1), (node2, 1)]
+
+unit_new_leader :: IO ()
+unit_new_leader = runScenario $ do
+  testInitLeader node0
+  testHandleEvent node1 (Timeout ElectionTimeout)
+  raftStates <- gets $ fmap fst . testNodeStates
+
+  liftIO $ assertNodeState raftStates [(node0, isFollower), (node1, isLeader), (node2, isFollower)]
+  liftIO $ assertLeader raftStates [(node0, CurrentLeader (LeaderId node1)), (node1, NoLeader), (node2, CurrentLeader (LeaderId node1))]
 
 
 --------------------------------------------

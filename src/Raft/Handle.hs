@@ -64,7 +64,9 @@ handleEvent nodeConfig raftNodeState@(RaftNodeState initNodeState) persistentSta
                 case convertToFollower initNodeState of
                   ResultState _ nodeState -> do
                     modify $ \pstate ->
-                      pstate { psCurrentTerm = rpcTerm rpc }
+                      pstate { psCurrentTerm = rpcTerm rpc
+                             , psVotedFor = Nothing
+                             }
                     resetElectionTimeout
                     pure (RaftNodeState nodeState)
               else pure raftNodeState
