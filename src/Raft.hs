@@ -43,7 +43,7 @@ class MonadConc m => RaftSendRPC m v where
   sendRPC :: NodeId -> Message v -> m ()
 
 class MonadConc m => RaftRecvRPC m v where
-  receiveRPC :: m (Message v)
+  recvRPC :: m (Message v)
 
 --- | The underlying raft state machin. Functional dependency permitting only
 --a single state machine command to be defined to update the state machine.
@@ -183,7 +183,7 @@ handleAction action =
 rpcHandler :: (MonadConc m, RaftRecvRPC m v) => Chan m (Event v) -> m ()
 rpcHandler eventChan =
   forever $
-    receiveRPC >>= \rpcMsg ->
+    recvRPC >>= \rpcMsg ->
       writeChan eventChan (Message rpcMsg)
 
 -- | Producer for the election timeout event

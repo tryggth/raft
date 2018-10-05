@@ -36,3 +36,10 @@ data PersistentState v = PersistentState
   , psLog :: Log v
     -- ^ log entries; each entry contains command for state machine
   } deriving (Show)
+
+initPersistentState :: PersistentState v
+initPersistentState = PersistentState
+  { psCurrentTerm = term0
+  , psVotedFor = Nothing
+  , psLog = Log mempty
+  }
