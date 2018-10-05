@@ -3,10 +3,11 @@ module Control.Concurrent.STM.Timer (
   Timer,
   waitTimer,
   startTimer,
+  resetTimer,
   newTimer
 ) where
 
-import Protolude hiding (STM, ThreadId, threadDelay, myThreadId, atomically)
+import Protolude hiding (STM, killThread, ThreadId, threadDelay, myThreadId, atomically)
 
 import Control.Monad.Conc.Class
 import Control.Concurrent.Classy.STM
@@ -39,8 +40,23 @@ startTimer n (Timer tid lock) = do
           putTMVar lock ()
           void $ takeTMVar tid
 
+stopTimer :: MonadConc m => Timer m -> m ()
+stopTimer (Timer tid lock) = do
+  timerLock <- atomically $ tryTakeTMVar lock
+  case timerLock of
+    Nothing -> do
+        killThread =<< atomically (takeTMVar tid)
+        atomically $ do
+          putTMVar lock ()
+          void $ takeTMVar tid
+    Just _ -> pure ()
+
+resetTimer :: MonadConc m => Natural -> Timer m -> m ()
+resetTimer n timer  =
+  stopTimer timer >> startTimer n timer
+
 newTimer :: MonadConc m => m (Timer m)
 newTimer = do
-  timerThread <- atomically newEmptyTMVar
-  timerLock <- atomically (newTMVar ())
+  (timerThread, timerLock) <-
+    atomically $ (,) <$> newEmptyTMVar <*> newTMVar ()
   pure $ Timer timerThread timerLock

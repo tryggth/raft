@@ -4,6 +4,8 @@ module Raft.Action where
 
 import Protolude
 
+import Numeric.Natural
+
 import Raft.NodeState
 import Raft.RPC
 import Raft.Log
@@ -19,5 +21,5 @@ data Action v
   | RespondToClient ClientId -- ^ Respond to client after successful command application
 
   | ApplyCommittedLogEntry (Entry v) -- ^ Apply a replicated log entry to state machine
-  | ResetTimeoutTimer Timeout Int -- ^ Reset a timeout timer
+  | ResetTimeoutTimer Timeout Natural -- ^ Reset a timeout timer
   deriving (Show)
