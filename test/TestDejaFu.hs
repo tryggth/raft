@@ -97,20 +97,20 @@ instance RaftPersist TestEnvM StoreCmd where
   savePersistentState pstate' = asks pstate >>= flip writeTVar pstate'
   loadPersistentState = asks pstate >>= readTVar
 
-instance RaftSendRPC TestEnvM (Message StoreCmd) where
+instance RaftSendRPC TestEnvM StoreCmd where
   sendRPC nid msg = do
     nodeChanMap <- asks nodes
     case Map.lookup nid nodeChanMap of
       Nothing -> panic "wtf bro"
       Just c -> liftIO $ writeChan c msg
 
-instance RaftRecvRPC TestEnvM (Message StoreCmd) where
+instance RaftRecvRPC TestEnvM StoreCmd where
   recvRPC = do
     myNodeId <- asks nid
     nodeChanMap <- asks nodes
-    case Map.lookup nid nodeChanMap of
+    case Map.lookup myNodeId nodeChanMap of
       Nothing -> panic "wtf bro"
-      Just c -> liftIO $ Message <$> readChan c
+      Just c -> liftIO $ readChan c
 
 mkNodeTestEnv :: NodeId -> NodeChanMap -> ConcIO TestEnv
 mkNodeTestEnv nid chanMap = do
@@ -133,9 +133,9 @@ test_auto = testAuto $ do
   testEnv1 <- mkNodeTestEnv node1 nodeChanMap
 
   tid1 <- fork $ lift $
-    runReaderT testEnv0 $ runRaftNode testConfig0 mempty
+    runReaderT (runRaftNode testConfig0 mempty) testEnv0
   tid2 <- fork $ lift $
-    runReaderT testEnv1 $ runRaftNode testConfig1 mempty
+    runReaderT (runRaftNode testConfig1 mempty) testEnv1
 
   threadDelay 3000000
   killThread tid1
