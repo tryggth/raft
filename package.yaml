@@ -28,6 +28,7 @@ dependencies:
 - concurrency
 - transformers
 - exceptions
+- random
 
 default-extensions:
   NoImplicitPrelude
@@ -62,5 +63,9 @@ tests:
     - tasty-discover
     - tasty-hunit
     - tasty-quickcheck
+    - dejafu
+    - tasty-dejafu
+    - tasty-expected-failure
+    - hunit-dejafu
     - QuickCheck
     - raft

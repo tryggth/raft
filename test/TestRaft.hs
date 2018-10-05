@@ -1,5 +1,4 @@
 {-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TupleSections #-}
@@ -27,40 +26,6 @@ import Raft.NodeState hiding (isFollower, isCandidate, isLeader)
 import Raft.Persistent
 import Raft.RPC
 import Raft.Types
-
-node0, node1, node2 :: NodeId
-node0 = "node0"
-node1 = "node1"
-node2 = "node2"
-
-client0 :: ClientId
-client0 = ClientId "client0"
-
-nodeIds :: NodeIds
-nodeIds = Set.fromList [node0, node1, node2]
-
-testConfigs :: [NodeConfig]
-testConfigs = [testConfig0, testConfig1, testConfig2]
-
-testConfig0, testConfig1, testConfig2 :: NodeConfig
-testConfig0 = NodeConfig
-  { configNodeId = node0
-  , configNodeIds = nodeIds
-  , configElectionTimeout = 150
-  , configHeartbeatTimeout = 20
-  }
-testConfig1 = NodeConfig
-  { configNodeId = node1
-  , configNodeIds = nodeIds
-  , configElectionTimeout = 150
-  , configHeartbeatTimeout = 20
-  }
-testConfig2 = NodeConfig
-  { configNodeId = node2
-  , configNodeIds = nodeIds
-  , configElectionTimeout = 150
-  , configHeartbeatTimeout = 20
-  }
 
 data TestValue = TestValue
   deriving (Show, Eq)
