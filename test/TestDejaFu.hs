@@ -3,6 +3,8 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE UndecidableInstances #-}
+
 module TestDejaFu where
 
 import Protolude hiding
@@ -48,21 +50,21 @@ import Raft
   --, testSM :: Entries v
   --}
 
---initialTestEnvM :: TestEnvM Int ()
---initialTestEnvM = undefined
+--initialTestEnvT :: TestEnvM Int ()
+--initialTestEnvT = undefined
 
---newtype TestEnvM v a = TestEnvM { unTestEnvM :: ReaderT (TestEnv v) IO a }
+--newtype TestEnvT v a = TestEnvM { unTestEnvM :: ReaderT (TestEnv v) IO a }
   --deriving (Functor, Applicative, Monad, MonadReader (TestEnv v))
 
 --instance RaftStateMachine (Entries Int) Int where
   --applyLogEntry sm v = appendLogEntry v sm
 
---instance RaftRPC (TestEnvM Int) Int where
+--instance RaftRPC (TestEnvT Int) Int where
   --sendRPC = undefined
   --receiveRPC = undefined
   --broadcastRPC = undefined
 
---instance RaftPersist (TestEnvM Int) Int where
+--instance RaftPersist (TestEnvT Int) Int where
   --savePersistentState ps = undefined
   --loadPersistentState = undefined
   --do
@@ -76,46 +78,62 @@ data StoreCmd = Set Text Natural | Incr Text
 
 type Store = Map Text Natural
 
+initStore :: Store
+initStore = mempty
+
 instance RaftStateMachine Store StoreCmd where
   applyCommittedLogEntry store cmd =
     case cmd of
       Set x n -> Map.insert x n store
       Incr x -> Map.adjust succ x store
 
-type NodeChanMap = Map NodeId (Chan IO (Message StoreCmd))
+type NodeChanMap m = Map NodeId (Chan m (Message StoreCmd))
 
-data TestEnv = TestEnv
-  { store :: TVar IO Store
-  , pstate :: TVar IO (PersistentState StoreCmd)
-  , nodes :: NodeChanMap
+data TestEnv m = TestEnv
+  { store :: TVar (STM m) Store
+  , pstate :: TVar (STM m) (PersistentState StoreCmd)
+  , nodes :: NodeChanMap m
   , nid :: NodeId
   }
 
-type TestEnvM = ReaderT TestEnv IO
+newtype TestEnvT m a = TestEnvT { unTestEnvT :: ReaderT (TestEnv m) m a }
+  deriving (Functor, Applicative, Monad, MonadReader (TestEnv m), Alternative, MonadPlus)
 
-instance RaftPersist TestEnvM StoreCmd where
-  savePersistentState pstate' = asks pstate >>= flip writeTVar pstate'
-  loadPersistentState = asks pstate >>= readTVar
+runTestEnvT :: TestEnv m -> TestEnvT m a -> m a
+runTestEnvT testEnv = flip runReaderT testEnv . unTestEnvT
 
-instance RaftSendRPC TestEnvM StoreCmd where
+instance MonadTrans TestEnvT where
+  lift = TestEnvT . lift
+
+deriving instance MonadThrow m => MonadThrow (TestEnvT m)
+deriving instance MonadCatch m => MonadCatch (TestEnvT m)
+deriving instance MonadSTM m => MonadSTM (TestEnvT m)
+deriving instance MonadMask m => MonadMask (TestEnvT m)
+deriving instance MonadConc m => MonadConc (TestEnvT m)
+
+instance MonadConc m => RaftPersist (TestEnvT m) StoreCmd where
+  savePersistentState pstate' = asks pstate >>= atomically . flip writeTVar pstate'
+  loadPersistentState = asks pstate >>= atomically . readTVar
+
+instance MonadConc m => RaftSendRPC (TestEnvT m) StoreCmd where
   sendRPC nid msg = do
     nodeChanMap <- asks nodes
     case Map.lookup nid nodeChanMap of
       Nothing -> panic "wtf bro"
-      Just c -> liftIO $ writeChan c msg
+      Just c -> lift $ writeChan c msg
 
-instance RaftRecvRPC TestEnvM StoreCmd where
+instance MonadConc m => RaftRecvRPC (TestEnvT m) StoreCmd where
   recvRPC = do
     myNodeId <- asks nid
     nodeChanMap <- asks nodes
     case Map.lookup myNodeId nodeChanMap of
       Nothing -> panic "wtf bro"
-      Just c -> liftIO $ readChan c
+      Just c -> lift $ readChan c
 
-mkNodeTestEnv :: NodeId -> NodeChanMap -> ConcIO TestEnv
+mkNodeTestEnv :: MonadConc m => NodeId -> NodeChanMap m -> m (TestEnv m)
 mkNodeTestEnv nid chanMap = do
-  newStore <- liftIO $ newTVar mempty
-  newPersistentState <- liftIO $ newTVar initPersistentState
+  newStore <- atomically $ newTVar initStore
+  newPersistentState <- atomically $ newTVar initPersistentState
   pure TestEnv
     { store = newStore
     , pstate = newPersistentState
@@ -126,20 +144,15 @@ mkNodeTestEnv nid chanMap = do
 test_auto :: TestTree
 test_auto = testAuto $ do
 
-  nodeChans <- liftIO $ replicateM 2 newChan
-  let nodeChanMap = Map.fromList $ zip [node1, node2] nodeChans
+  nodeChans <- replicateM 2 newChan
+  let nodeChanMap = Map.fromList $ zip [node0, node1] nodeChans
 
   testEnv0 <- mkNodeTestEnv node0 nodeChanMap
-  testEnv1 <- mkNodeTestEnv node1 nodeChanMap
+  -- testEnv1 <- mkNodeTestEnv node1 nodeChanMap
 
-  tid1 <- fork $ lift $
-    runReaderT (runRaftNode testConfig0 mempty) testEnv0
-  tid2 <- fork $ lift $
-    runReaderT (runRaftNode testConfig1 mempty) testEnv1
+  runTestEnvT testEnv0 (runRaftNode testConfig0 initStore)
+  -- runTestEnvT testEnv1 (runRaftNode testConfig1 initStore)
 
-  threadDelay 3000000
-  killThread tid1
-  killThread tid2
 
 --------------------------------------------------------------------------------
 --
