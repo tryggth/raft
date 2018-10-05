@@ -97,7 +97,9 @@ incrementTerm :: TransitionM v ()
 incrementTerm = do
   psNextTerm <- gets (incrTerm . psCurrentTerm)
   modify $ \pstate ->
-    pstate { psCurrentTerm = psNextTerm }
+    pstate { psCurrentTerm = psNextTerm
+           , psVotedFor = Nothing
+           }
 
 appendNewLogEntries :: Seq (Entry v) -> TransitionM v ()
 appendNewLogEntries newEntries =
