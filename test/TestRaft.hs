@@ -10,7 +10,6 @@ import Protolude
 import qualified Data.Sequence as Seq
 import Data.Sequence ((<|))
 import qualified Data.Map as Map
-import qualified Data.Map.Merge.Lazy as Merge
 import qualified Data.Set as Set
 import qualified Test.Tasty.HUnit as HUnit
 
@@ -22,13 +21,19 @@ import Raft.Event
 import Raft.Handle (handleEvent)
 import Raft.Log
 import Raft.Monad
-import Raft.NodeState hiding (isFollower, isCandidate, isLeader)
+import Raft.NodeState
 import Raft.Persistent
 import Raft.RPC
 import Raft.Types
 
+
+------------------------------------
+-- Scenario Monad
+------------------------------------
+
 data TestValue = TestValue
   deriving (Show, Eq)
+
 
 data TestState = TestState
   { testNodeIds :: NodeIds
@@ -57,67 +62,6 @@ runScenario scenario = do
 
   evalStateT scenario initTestState
 
-getNodeInfo :: NodeId -> Scenario (NodeConfig, Seq (Message TestValue), RaftNodeState TestValue, PersistentState TestValue)
-getNodeInfo nId = do
-  nodeConfigs <- gets testNodeConfigs
-  nodeMessages <- gets testNodeMessages
-  nodeStates <- gets testNodeStates
-  let Just nodeInfo = Map.lookup nId nodeConfigs >>= \config ->
-                  Map.lookup nId nodeMessages >>= \msgs ->
-                  Map.lookup nId nodeStates >>= \(raftState, persistentState) ->
-                  pure (config, msgs, raftState, persistentState)
-  pure nodeInfo
-
-getNodesInfo :: Scenario (Map NodeId ((NodeConfig, Seq (Message TestValue)), (RaftNodeState TestValue, PersistentState TestValue)))
-getNodesInfo = do
-  nodeConfigs <- gets testNodeConfigs
-  nodeMessages <- gets testNodeMessages
-  nodeStates <- gets testNodeStates
-  pure $ nodeConfigs `combine` nodeMessages `combine` nodeStates
-
--- | Zip maps using function. Throws away items left and right
-zipMapWith :: Ord k => (a -> b -> c) -> Map k a -> Map k b -> Map k c
-zipMapWith f = Merge.merge Merge.dropMissing Merge.dropMissing (Merge.zipWithMatched (const f))
-
--- | Perform an inner join on maps (hence throws away items left and right)
-combine :: Ord a => Map a b -> Map a c -> Map a (b, c)
-combine = zipMapWith (,)
-
-testHandleActions :: NodeId -> [Action TestValue] -> Scenario ()
-testHandleActions sender =
-  mapM_ (testHandleAction sender)
-
-testHandleAction :: NodeId -> Action TestValue -> Scenario ()
-testHandleAction sender action = case action of
-  SendMessage nId msg -> testHandleEvent nId (Message msg)
-  Broadcast nIds msg -> mapM_ (`testHandleEvent` Message msg) nIds
-  ApplyCommittedLogEntry entry -> modify (\testState -> do
-    let nodeLogEntries = fromMaybe Seq.empty (Map.lookup sender (testSMEntries testState))
-    testState { testSMEntries
-      = Map.insert sender (entry <| nodeLogEntries) (testSMEntries testState) })
-  _ -> pure ()
-
-printIfNode :: NodeId -> NodeId -> [Char] -> Scenario ()
-printIfNode nId nId' msg =
-  when (nId == nId') $
-    liftIO $ print $ show nId ++ " " ++ msg
-
-printIfNodes :: [NodeId] -> NodeId -> [Char] -> Scenario ()
-printIfNodes nIds nId' msg =
-  when (nId' `elem` nIds) $
-    liftIO $ print $ show nId' ++ " " ++ msg
-
-testHandleEvent :: NodeId -> Event TestValue -> Scenario ()
-testHandleEvent nodeId event = do
-  printIfNodes [node1] nodeId ("Received event: " ++ show event)
-  (nodeConfig, nodeMessages, raftState, persistentState) <- getNodeInfo nodeId
-  let (newRaftState, newPersistentState, actions) = handleEvent nodeConfig raftState persistentState event
-  testUpdateState nodeId event newRaftState newPersistentState nodeMessages
-  printIfNodes [node1] nodeId ("New RaftState: " ++ show newRaftState)
-  --printIfNodes [node0] nodeId ("New PersistentState: " ++ show newPersistentState)
-  printIfNodes [node1] nodeId ("Generated actions: " ++ show actions)
-  testHandleActions nodeId actions
-
 testUpdateState
   :: NodeId
   -> Event TestValue
@@ -137,6 +81,64 @@ testUpdateState nodeId _ raftState persistentState _
           { testNodeStates = Map.insert nodeId (raftState, persistentState) testNodeStates
           }
 
+testApplyCommittedLogEntry :: NodeId -> Entry TestValue -> Scenario ()
+testApplyCommittedLogEntry nId entry = modify (\testState -> do
+    let nodeLogEntries = fromMaybe Seq.empty (Map.lookup nId (testSMEntries testState))
+    testState { testSMEntries
+       = Map.insert nId (entry <| nodeLogEntries) (testSMEntries testState)
+      })
+
+getNodeInfo :: NodeId -> Scenario (NodeConfig, Seq (Message TestValue), RaftNodeState TestValue, PersistentState TestValue)
+getNodeInfo nId = do
+  nodeConfigs <- gets testNodeConfigs
+  nodeMessages <- gets testNodeMessages
+  nodeStates <- gets testNodeStates
+  let Just nodeInfo = Map.lookup nId nodeConfigs >>= \config ->
+                  Map.lookup nId nodeMessages >>= \msgs ->
+                  Map.lookup nId nodeStates >>= \(raftState, persistentState) ->
+                  pure (config, msgs, raftState, persistentState)
+  pure nodeInfo
+
+getNodesInfo :: Scenario (Map NodeId ((NodeConfig, Seq (Message TestValue)), (RaftNodeState TestValue, PersistentState TestValue)))
+getNodesInfo = do
+  nodeConfigs <- gets testNodeConfigs
+  nodeMessages <- gets testNodeMessages
+  nodeStates <- gets testNodeStates
+  pure $ nodeConfigs `combine` nodeMessages `combine` nodeStates
+
+----------------------------------------
+-- Handle actions and events
+----------------------------------------
+
+testHandleActions :: NodeId -> [Action TestValue] -> Scenario ()
+testHandleActions sender =
+  mapM_ (testHandleAction sender)
+
+testHandleAction :: NodeId -> Action TestValue -> Scenario ()
+testHandleAction sender action = case action of
+  SendMessage nId msg -> testHandleEvent nId (Message msg)
+  SendMessages msgs -> notImplemented
+  Broadcast nIds msg -> mapM_ (`testHandleEvent` Message msg) nIds
+  ApplyCommittedLogEntry entry -> testApplyCommittedLogEntry sender entry
+  RedirectClient clientId currentLeader -> notImplemented
+  RespondToClient clientId -> notImplemented
+  ResetTimeoutTimer _ _ -> noop
+  where
+    noop = liftIO $ print $ "Action: " ++ show action
+
+testHandleEvent :: NodeId -> Event TestValue -> Scenario ()
+testHandleEvent nodeId event = do
+  liftIO $ printIfNodes [node1] nodeId ("Received event: " ++ show event)
+  (nodeConfig, nodeMessages, raftState, persistentState) <- getNodeInfo nodeId
+  let (newRaftState, newPersistentState, actions) = handleEvent nodeConfig raftState persistentState event
+  testUpdateState nodeId event newRaftState newPersistentState nodeMessages
+  liftIO $ printIfNodes [node1] nodeId ("Generated actions: " ++ show actions)
+  testHandleActions nodeId actions
+
+----------------------------
+-- Test raft events
+----------------------------
+
 testInitLeader :: NodeId -> Scenario ()
 testInitLeader nId =
   testHandleEvent nId (Timeout ElectionTimeout)
@@ -150,7 +152,7 @@ testHeartbeat sender = do
   nodeStates <- gets testNodeStates
   nIds <- gets testNodeIds
   let Just (raftState, persistentState) = Map.lookup sender nodeStates
-  unless (isLeader raftState) $ panic $ toS (show sender ++ " must a be a leader to heartbeat")
+  unless (isRaftLeader raftState) $ panic $ toS (show sender ++ " must a be a leader to heartbeat")
   let Just entry@Entry{..} = lastLogEntry $ psLog persistentState
   let LeaderState{..} = getInnerLeaderState raftState
   let appendEntry = AppendEntries
@@ -185,45 +187,46 @@ unit_init_protocol = runScenario $ do
 
   -- Test that node0 is a leader and the other nodes are followers
   liftIO $ assertLeader raftStates [(node0, NoLeader), (node1, CurrentLeader (LeaderId node0)), (node2, CurrentLeader (LeaderId node0))]
-  liftIO $ assertNodeState raftStates [(node0, isLeader), (node1, isFollower), (node2, isFollower)]
+  liftIO $ assertNodeState raftStates [(node0, isRaftLeader), (node1, isRaftFollower), (node2, isRaftFollower)]
 
 unit_append_entries_client_request :: IO ()
 unit_append_entries_client_request = runScenario $ do
+  ---------------------------------
   testInitLeader node0
   testClientRequest node0
+  ---------------------------------
 
   persistentStates0 <- gets $ fmap snd . testNodeStates
   raftStates0 <- gets $ fmap fst . testNodeStates
   smEntries0 <- gets testSMEntries
 
-  -- Test node persistent state logs are of the right length
   liftIO $ assertAppendedLogs persistentStates0 [(node0, 1), (node1, 1), (node2, 1)]
-
-  -- Test node0 has committed their logs but the other nodes have not yet
-  -- They will update their logs on the next heartbeat
   liftIO $ assertCommittedLogIndex raftStates0 [(node0, Index 1), (node1, Index 0), (node2, Index 0)]
-
   liftIO $ assertAppliedLogIndex raftStates0 [(node0, Index 1), (node1, Index 0), (node2, Index 0)]
-
-  -- Test that node0 has applied the committed log, i.e. it has updated its
-  -- state machine. Node1 and node2 haven't updated their state machines yet.
   liftIO $ assertSMEntries smEntries0 [(node0, 1), (node1, 0), (node2, 0)]
 
   -- -------------- HEARTBEAT 1 ---------------------
-  -- Leader heartbeats after receiving client request
   testHeartbeat node0
+  ---------------------------------------------------
 
+  persistentStates1 <- gets $ fmap snd . testNodeStates
   raftStates1 <- gets $ fmap fst . testNodeStates
   smEntries1 <- gets testSMEntries
 
-  -- Test all nodes have committed their logs after leader heartbeats
-  -- Committed logs
+  -- Test all nodes have appended, committed and applied their logs
+  liftIO $ assertAppendedLogs persistentStates1 [(node0, 1), (node1, 1),(node2, 1)]
   liftIO $ assertCommittedLogIndex raftStates1 [(node0, Index 1), (node1, Index 1), (node2, Index 1)]
-  -- Applied committed logs
   liftIO $ assertAppliedLogIndex raftStates1 [(node0, Index 1), (node1, Index 1), (node2, Index 1)]
-  -- Applied logs in nodes' state machines
   liftIO $ assertSMEntries smEntries1 [(node0, 1), (node1, 1), (node2, 1)]
 
+unit_new_leader :: IO ()
+unit_new_leader = runScenario $ do
+  testInitLeader node0
+  testHandleEvent node1 (Timeout ElectionTimeout)
+  raftStates <- gets $ fmap fst . testNodeStates
+
+  liftIO $ assertNodeState raftStates [(node0, isRaftFollower), (node1, isRaftLeader), (node2, isRaftFollower)]
+  liftIO $ assertLeader raftStates [(node0, CurrentLeader (LeaderId node1)), (node1, NoLeader), (node2, CurrentLeader (LeaderId node1))]
 
 --------------------------------------------
 -- Assert utils
