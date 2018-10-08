@@ -107,24 +107,26 @@ runRaftNode
    :: (Show v, MonadConc m, RaftStateMachine s v, RaftSendRPC m v, RaftRecvRPC m v, RaftPersist m v)
    => NodeConfig
    -> s
+   -> (Text -> m())
    -> m ()
-runRaftNode nodeConfig@NodeConfig{..} initStateMachine = do
+runRaftNode nodeConfig@NodeConfig{..} initStateMachine logWriter = do
   eventChan <- newChan
   electionTimer <- newTimer
   heartbeatTimer <- newTimer
 
-  --fork (electionTimeoutTimer configElectionTimeout electionTimer eventChan)
-  --fork (heartbeatTimeoutTimer configElectionTimeout electionTimer eventChan)
+  fork (electionTimeoutTimer configElectionTimeout electionTimer eventChan)
+  fork (heartbeatTimeoutTimer configElectionTimeout electionTimer eventChan)
   fork (rpcHandler eventChan)
   let raftState = RaftState initRaftNodeState initStateMachine
       raftEnv = RaftEnv eventChan electionTimer heartbeatTimer
-  runRaftT raftState raftEnv (handleEventLoop nodeConfig)
+  runRaftT raftState raftEnv (handleEventLoop nodeConfig logWriter)
 
 handleEventLoop
    :: forall v m s. (Show v, MonadConc m, RaftStateMachine s v, RaftPersist m v, RaftSendRPC m v)
    => NodeConfig
+   -> (Text -> m ())
    -> RaftT s v m ()
-handleEventLoop nodeConfig =
+handleEventLoop nodeConfig logWriter =
     handleEventLoop' =<< lift loadPersistentState
   where
     handleEventLoop' :: PersistentState v -> RaftT s v m ()
@@ -134,7 +136,8 @@ handleEventLoop nodeConfig =
             Raft.Handle.handleEvent nodeConfig initRaftNodeState persistentState event
       lift $ savePersistentState resPersistentState
       updateRaftNodeState resRaftNodeState
-      handleActions $ actions transitionW
+      handleActions $ twActions transitionW
+      handleLogs logWriter $ twLogs transitionW
       handleEventLoop' resPersistentState
 
     updateRaftNodeState :: RaftNodeState v -> RaftT s v m ()
@@ -173,6 +176,13 @@ handleAction action =
   where
     resetServerTimer f n =
       lift . resetTimer n =<< asks f
+
+handleLogs
+  :: (Show v, MonadConc m)
+  => (Text -> m ())
+  -> TWLogs
+  -> RaftT s v m ()
+handleLogs f logs = lift $ mapM_ f logs
 
 ------------------------------------------------------------------------------
  --Event Producers

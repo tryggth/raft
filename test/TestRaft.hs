@@ -110,6 +110,9 @@ getNodesInfo = do
 -- Handle actions and events
 ----------------------------------------
 
+testHandleLogs :: (Text -> IO ()) -> TWLogs -> Scenario ()
+testHandleLogs f logs = liftIO $ mapM_ f logs
+
 testHandleActions :: NodeId -> [Action TestValue] -> Scenario ()
 testHandleActions sender =
   mapM_ (testHandleAction sender)
@@ -132,7 +135,8 @@ testHandleEvent nodeId event = do
   (nodeConfig, nodeMessages, raftState, persistentState) <- getNodeInfo nodeId
   let (newRaftState, newPersistentState, transitionW) = handleEvent nodeConfig raftState persistentState event
   testUpdateState nodeId event newRaftState newPersistentState nodeMessages
-  testHandleActions nodeId (actions transitionW)
+  testHandleActions nodeId (twActions transitionW)
+  testHandleLogs print (twLogs transitionW)
 
 ----------------------------
 -- Test raft events

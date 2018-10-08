@@ -24,13 +24,15 @@ import Raft.Types
 -- Raft Monad
 --------------------------------------------------------------------------------
 
+type TWLogs = [Text]
+
 data TransitionWriter v = TransitionWriter
-  { actions :: [Action v]
-  , logs :: [Text]
+  { twActions :: [Action v]
+  , twLogs :: TWLogs
   } deriving (Show)
 
 instance Semigroup (TransitionWriter v) where
-  t1 <> t2 = TransitionWriter (actions t1 <> actions t2) (logs t1 <> logs t2)
+  t1 <> t2 = TransitionWriter (twActions t1 <> twActions t2) (twLogs t1 <> twLogs t2)
 
 instance Monoid (TransitionWriter v) where
   mempty = TransitionWriter [] []
