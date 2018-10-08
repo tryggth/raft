@@ -39,13 +39,13 @@ import Raft.Types
 
 -- | Provide an interface for nodes to send/receive messages to/from one
 -- another. E.g. Control.Concurrent.Chan, Network.Socket, etc.
-class MonadConc m => RaftSendRPC m v where
+class RaftSendRPC m v where
   sendRPC :: NodeId -> Message v -> m ()
 
-class MonadConc m => RaftRecvRPC m v where
+class RaftRecvRPC m v where
   recvRPC :: m (Message v)
 
---- | The underlying raft state machin. Functional dependency permitting only
+--- | The underlying raft state machine. Functional dependency permitting only
 --a single state machine command to be defined to update the state machine.
 class RaftStateMachine sm cmd | sm -> cmd where
   applyCommittedLogEntry :: sm -> cmd -> sm
@@ -56,7 +56,7 @@ class RaftStateMachine sm cmd | sm -> cmd where
 -- TODO: It is infeasible to keep the persistent state in memory, as it contains
 -- all of the logs in their entirety. Perhaps there is a better solution... see
 -- the Raft.PersistentState module.
-class MonadConc m => RaftPersist m v where
+class RaftPersist m v where
   savePersistentState :: PersistentState v -> m ()
   loadPersistentState :: m (PersistentState v)
 
@@ -104,7 +104,7 @@ runRaftT raftState raftEnv =
 ------------------------------------------------------------------------------
 
 runRaftNode
-   :: (MonadConc m, RaftStateMachine s v, RaftSendRPC m v, RaftRecvRPC m v, RaftPersist m v)
+   :: (Show v, MonadConc m, RaftStateMachine s v, RaftSendRPC m v, RaftRecvRPC m v, RaftPersist m v)
    => NodeConfig
    -> s
    -> m ()
@@ -113,16 +113,15 @@ runRaftNode nodeConfig@NodeConfig{..} initStateMachine = do
   electionTimer <- newTimer
   heartbeatTimer <- newTimer
 
-  fork (electionTimeoutTimer configElectionTimeout electionTimer eventChan)
-  fork (heartbeatTimeoutTimer configElectionTimeout electionTimer eventChan)
+  --fork (electionTimeoutTimer configElectionTimeout electionTimer eventChan)
+  --fork (heartbeatTimeoutTimer configElectionTimeout electionTimer eventChan)
   fork (rpcHandler eventChan)
-
   let raftState = RaftState initRaftNodeState initStateMachine
       raftEnv = RaftEnv eventChan electionTimer heartbeatTimer
   runRaftT raftState raftEnv (handleEventLoop nodeConfig)
 
 handleEventLoop
-   :: forall v m s. (MonadConc m, RaftStateMachine s v, RaftPersist m v, RaftSendRPC m v)
+   :: forall v m s. (Show v, MonadConc m, RaftStateMachine s v, RaftPersist m v, RaftSendRPC m v)
    => NodeConfig
    -> RaftT s v m ()
 handleEventLoop nodeConfig =
@@ -131,11 +130,11 @@ handleEventLoop nodeConfig =
     handleEventLoop' :: PersistentState v -> RaftT s v m ()
     handleEventLoop' persistentState = do
       event <- lift . readChan =<< asks serverEventChan
-      let (resRaftNodeState, resPersistentState, actions) =
+      let (resRaftNodeState, resPersistentState, transitionW) =
             Raft.Handle.handleEvent nodeConfig initRaftNodeState persistentState event
       lift $ savePersistentState resPersistentState
       updateRaftNodeState resRaftNodeState
-      handleActions actions
+      handleActions $ actions transitionW
       handleEventLoop' resPersistentState
 
     updateRaftNodeState :: RaftNodeState v -> RaftT s v m ()
@@ -144,13 +143,13 @@ handleEventLoop nodeConfig =
         raftState { serverNodeState = newRaftNodeState }
 
 handleActions
-  :: (MonadConc m, RaftStateMachine s v, RaftSendRPC m v)
+  :: (Show v, MonadConc m, RaftStateMachine s v, RaftSendRPC m v)
   => [Action v]
   -> RaftT s v m ()
 handleActions = mapM_ handleAction
 
 handleAction
-  :: (MonadConc m, RaftStateMachine s v, RaftSendRPC m v)
+  :: (Show v, MonadConc m, RaftStateMachine s v, RaftSendRPC m v)
   => Action v
   -> RaftT s v m ()
 handleAction action =
@@ -159,22 +158,22 @@ handleAction action =
     SendMessages msgs ->
       forConcurrently_ (Map.toList msgs) $ \(nid, msg) ->
         lift (sendRPC nid msg)
-    Broadcast nids msg ->
-      mapConcurrently_ (lift . flip sendRPC msg) nids
+    Broadcast nids msg -> mapConcurrently_ (lift . flip sendRPC msg) nids
     RedirectClient (ClientId cid) currLdr -> undefined
     RespondToClient cid -> undefined
-    ApplyCommittedLogEntry entry -> do
+    ApplyCommittedLogEntry entry ->
       modify $ \raftState -> do
         let stateMachine = serverStateMachine raftState
             v = entryValue entry
         raftState { serverStateMachine = applyCommittedLogEntry stateMachine v }
-    ResetTimeoutTimer tout n -> do
+    ResetTimeoutTimer tout n ->
       case tout of
         ElectionTimeout -> resetServerTimer serverElectionTimer n
         HeartbeatTimeout -> resetServerTimer serverHeartbeatTimer n
   where
     resetServerTimer f n =
       lift . resetTimer n =<< asks f
+
 ------------------------------------------------------------------------------
  --Event Producers
 ------------------------------------------------------------------------------

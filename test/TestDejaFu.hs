@@ -13,7 +13,9 @@ import Protolude hiding
   , newChan, writeChan, readChan
   , threadDelay, killThread
   )
+
 import qualified Data.Map as Map
+import qualified Data.Set as Set
 import Data.Sequence (Seq(..), (<|))
 import qualified Data.Sequence as Seq
 import Control.Monad.Reader
@@ -22,6 +24,7 @@ import Control.Concurrent.Classy hiding (check)
 import Control.Concurrent.Classy.STM.TVar
 import Data.Functor (void)
 import Test.DejaFu hiding (MemType(..), check)
+import Test.DejaFu.SCT
 import Test.DejaFu.Conc hiding (Stop)
 import Test.Tasty.DejaFu
 import Test.Tasty
@@ -41,40 +44,8 @@ import Raft.RPC
 import Raft.Types
 import Raft
 
---data TestSM v = TestSM
-  --{ testLogEntries :: Entries v
-  --}
-
---data TestEnv v = TestEnv
-  --{ testPS :: TVar (STM Identity) (PersistentState v)
-  --, testSM :: Entries v
-  --}
-
---initialTestEnvT :: TestEnvM Int ()
---initialTestEnvT = undefined
-
---newtype TestEnvT v a = TestEnvM { unTestEnvM :: ReaderT (TestEnv v) IO a }
-  --deriving (Functor, Applicative, Monad, MonadReader (TestEnv v))
-
---instance RaftStateMachine (Entries Int) Int where
-  --applyLogEntry sm v = appendLogEntry v sm
-
---instance RaftRPC (TestEnvT Int) Int where
-  --sendRPC = undefined
-  --receiveRPC = undefined
-  --broadcastRPC = undefined
-
---instance RaftPersist (TestEnvT Int) Int where
-  --savePersistentState ps = undefined
-  --loadPersistentState = undefined
-  --do
-    -- <- ask
-    --psTVar <- atomically $
-      --newTVar (PersistentState term0 Nothing (Log (Seq.empty)))
-    --ps <- atomically $ readTVar psTVar
-    --pure ps
-
 data StoreCmd = Set Text Natural | Incr Text
+  deriving (Show)
 
 type Store = Map Text Natural
 
@@ -119,16 +90,17 @@ instance MonadConc m => RaftSendRPC (TestEnvT m) StoreCmd where
   sendRPC nid msg = do
     nodeChanMap <- asks nodes
     case Map.lookup nid nodeChanMap of
-      Nothing -> panic "wtf bro"
+      Nothing -> panic $ toS $ "SendRPC: " ++ show nid ++ " .Wtf bro"
       Just c -> lift $ writeChan c msg
 
 instance MonadConc m => RaftRecvRPC (TestEnvT m) StoreCmd where
   recvRPC = do
     myNodeId <- asks nid
     nodeChanMap <- asks nodes
-    case Map.lookup myNodeId nodeChanMap of
-      Nothing -> panic "wtf bro"
+    cmd <- case Map.lookup myNodeId nodeChanMap of
+      Nothing -> panic $ toS $ "RecvRPC: " ++ show myNodeId ++ " .Wtf bro"
       Just c -> lift $ readChan c
+    pure cmd
 
 mkNodeTestEnv :: MonadConc m => NodeId -> NodeChanMap m -> m (TestEnv m)
 mkNodeTestEnv nid chanMap = do
@@ -141,83 +113,21 @@ mkNodeTestEnv nid chanMap = do
     , nid = nid
     }
 
-test_auto :: TestTree
-test_auto = testAuto $ do
+--test_auto :: TestTree
+--test_auto = testAuto $ do
 
-  nodeChans <- replicateM 2 newChan
-  let nodeChanMap = Map.fromList $ zip [node0, node1] nodeChans
+--testauto :: IO [(Either Failure (), Trace)]
+--testauto =
+  --runSCT defaultWay defaultMemType $ do
 
-  testEnv0 <- mkNodeTestEnv node0 nodeChanMap
-  -- testEnv1 <- mkNodeTestEnv node1 nodeChanMap
+  --nodeChans <- replicateM 2 newChan
+  --let nodeChanMap = Map.fromList $ zip [node0, node1] nodeChans
 
-  runTestEnvT testEnv0 (runRaftNode testConfig0 initStore)
-  -- runTestEnvT testEnv1 (runRaftNode testConfig1 initStore)
+  --testEnv0 <- mkNodeTestEnv node0 nodeChanMap
+  --testEnv1 <- mkNodeTestEnv node1 nodeChanMap
+  --let testConfig0' = testConfig0 { configNodeIds = Set.fromList [node0, node1] }
+  --let testConfig1' = testConfig1 { configNodeIds = Set.fromList [node0, node1] }
 
+  --fork $ runTestEnvT (DT.trace "TEST 0" testEnv0) (runRaftNode testConfig0' initStore)
+  --runTestEnvT testEnv1 (runRaftNode testConfig1' initStore)
 
---------------------------------------------------------------------------------
---
--- data Logger m = Logger (MVar m LogCommand) (MVar m [[Char]])
---
--- data LogCommand = Message [Char] | Stop
---
--- -- | Create a new logger with no internal log.
--- initLogger :: MonadConc m => m (Logger m)
--- initLogger = do
---   cmd <- newEmptyMVar
---   logg <- newMVar []
---   let l = Logger cmd logg
---   void . fork $ logger l
---   pure l
---
--- logger :: MonadConc m => Logger m -> m ()
--- logger (Logger cmd logg) = loop where
---   loop = do
---     command <- takeMVar cmd
---     case command of
---       Message str -> do
---         strs <- takeMVar logg
---         putMVar logg (strs ++ [str])
---         loop
---       Stop -> pure ()
---
--- -- | Add a string to the log.
--- logMessage :: MonadConc m => Logger m -> [Char] -> m ()
--- logMessage (Logger cmd _) str = putMVar cmd $ Message str
---
--- -- | Stop the logger and return the contents of the log.
--- logStop :: MonadConc m => Logger m -> m [[Char]]
--- logStop (Logger cmd logg) = do
---   putMVar cmd Stop
---   readMVar logg
---
--- -- | Race condition! Can you see where?
--- raceyLogger :: MonadConc m => m [[Char]]
--- raceyLogger = do
---   l <- initLogger
---   logMessage l "Hello"
---   logMessage l "World"
---   logMessage l "Foo"
---   logMessage l "Bar"
---   logMessage l "Baz"
---   logStop l
---
--- -- | Test that the result is always in the set of allowed values, and
--- -- doesn't deadlock.
--- validResult :: Predicate [[Char]]
--- validResult = alwaysTrue check where
---   check (Right strs) = strs `elem` [ ["Hello", "World", "Foo", "Bar", "Baz"]
---                                    , ["Hello", "World", "Foo", "Bar"]
---                                    ]
---   check _ = False
---
--- -- | Test that the "proper" result occurs at least once.
--- isGood :: Predicate [[Char]]
--- isGood = somewhereTrue check where
---   check (Right a) = length a == 5
---   check _ = False
---
--- -- | Test that the erroneous result occurs at least once.
--- isBad :: Predicate [[Char]]
--- isBad = somewhereTrue check where
---   check (Right a) = length a == 4
--- check _ = False

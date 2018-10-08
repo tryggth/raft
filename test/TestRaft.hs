@@ -128,12 +128,11 @@ testHandleAction sender action = case action of
 
 testHandleEvent :: NodeId -> Event TestValue -> Scenario ()
 testHandleEvent nodeId event = do
-  liftIO $ printIfNodes [node1] nodeId ("Received event: " ++ show event)
+  --liftIO $ printIfNodes [node1] nodeId ("Received event: " ++ show event)
   (nodeConfig, nodeMessages, raftState, persistentState) <- getNodeInfo nodeId
-  let (newRaftState, newPersistentState, actions) = handleEvent nodeConfig raftState persistentState event
+  let (newRaftState, newPersistentState, transitionW) = handleEvent nodeConfig raftState persistentState event
   testUpdateState nodeId event newRaftState newPersistentState nodeMessages
-  liftIO $ printIfNodes [node1] nodeId ("Generated actions: " ++ show actions)
-  testHandleActions nodeId actions
+  testHandleActions nodeId (actions transitionW)
 
 ----------------------------
 -- Test raft events

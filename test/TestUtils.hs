@@ -51,24 +51,27 @@ nodeIds = Set.fromList [node0, node1, node2]
 testConfigs :: [NodeConfig]
 testConfigs = [testConfig0, testConfig1, testConfig2]
 
+toMicroS :: Num n => n -> n
+toMicroS x = x * 100000
+
 testConfig0, testConfig1, testConfig2 :: NodeConfig
 testConfig0 = NodeConfig
   { configNodeId = node0
   , configNodeIds = nodeIds
-  , configElectionTimeout = 150
-  , configHeartbeatTimeout = 20
+  , configElectionTimeout = toMicroS 150
+  , configHeartbeatTimeout = toMicroS 20
   }
 testConfig1 = NodeConfig
   { configNodeId = node1
   , configNodeIds = nodeIds
-  , configElectionTimeout = 150
-  , configHeartbeatTimeout = 20
+  , configElectionTimeout = toMicroS 100
+  , configHeartbeatTimeout = toMicroS 20
   }
 testConfig2 = NodeConfig
   { configNodeId = node2
   , configNodeIds = nodeIds
-  , configElectionTimeout = 150
-  , configHeartbeatTimeout = 20
+  , configElectionTimeout = toMicroS 150
+  , configHeartbeatTimeout = toMicroS 20
   }
 
 -- | Zip maps using function. Throws away items left and right

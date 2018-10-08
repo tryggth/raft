@@ -30,11 +30,12 @@ startTimer n (Timer tid lock) = do
   case timerLock of
     Nothing -> pure ()
     Just () ->
-      void $ fork $ do
+      void $ do
         threadId <- myThreadId
         atomically $ do
           _ <- tryTakeTMVar tid
           putTMVar tid threadId
+
         threadDelay (fromIntegral n)
         atomically $ do
           putTMVar lock ()
@@ -46,9 +47,7 @@ stopTimer (Timer tid lock) = do
   case timerLock of
     Nothing -> do
         killThread =<< atomically (takeTMVar tid)
-        atomically $ do
-          putTMVar lock ()
-          void $ takeTMVar tid
+        atomically $ putTMVar lock ()
     Just _ -> pure ()
 
 resetTimer :: MonadConc m => Natural -> Timer m -> m ()

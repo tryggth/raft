@@ -18,8 +18,6 @@ module Raft.Follower (
 
 import Protolude
 
-import Control.Monad.Writer (tell)
-
 import Data.Sequence (Seq, takeWhileL)
 import Data.Set (singleton)
 
@@ -55,7 +53,7 @@ handleAppendEntries (NodeFollowerState fs) sender AppendEntries{..} = do
                     appendNewLogEntries aeEntries
                     pure (True, updateLeader fs)
                 | otherwise -> pure (False, fs)
-              Just logEntry -> do
+              Just logEntry ->
                 -- 2. Reply false if log doesn't contain an entry at
                 -- prevLogIndex
                 -- whose term matches prevLogTerm.
