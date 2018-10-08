@@ -45,10 +45,11 @@ stopTimer (Timer tid lock) = do
   timerLock <- atomically $ tryTakeTMVar lock
   case timerLock of
     Nothing -> do
-        killThread =<< atomically (takeTMVar tid)
-        atomically $ do
-          putTMVar lock ()
-          void $ takeTMVar tid
+        currThreadId <-
+          atomically $ do
+            putTMVar lock ()
+            takeTMVar tid
+        killThread currThreadId
     Just _ -> pure ()
 
 resetTimer :: MonadConc m => Natural -> Timer m -> m ()
