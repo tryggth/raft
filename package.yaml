@@ -25,7 +25,9 @@ dependencies:
 - mtl
 - containers
 - text
-- stm
+- concurrency
+- transformers
+- exceptions
 
 default-extensions:
   NoImplicitPrelude
