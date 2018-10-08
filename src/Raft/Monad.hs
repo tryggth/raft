@@ -24,7 +24,9 @@ import Raft.Types
 -- Raft Monad
 --------------------------------------------------------------------------------
 
-type TWLogs = [Text]
+data TWLog = TWLog NodeId Text
+  deriving Show
+type TWLogs = [TWLog]
 
 data TransitionWriter v = TransitionWriter
   { twActions :: [Action v]
@@ -38,7 +40,9 @@ instance Monoid (TransitionWriter v) where
   mempty = TransitionWriter [] []
 
 tellLog :: Text -> TransitionM v ()
-tellLog s = tell (TransitionWriter [] [s])
+tellLog s = do
+  nId <- asks configNodeId
+  tell (TransitionWriter [] [TWLog nId s])
 
 tellAction :: Action v -> TransitionM v ()
 tellAction a = tell (TransitionWriter [a] [])

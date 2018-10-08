@@ -107,7 +107,7 @@ runRaftNode
    :: (Show v, MonadConc m, RaftStateMachine s v, RaftSendRPC m v, RaftRecvRPC m v, RaftPersist m v)
    => NodeConfig
    -> s
-   -> (Text -> m())
+   -> (TWLog -> m())
    -> m ()
 runRaftNode nodeConfig@NodeConfig{..} initStateMachine logWriter = do
   eventChan <- newChan
@@ -124,7 +124,7 @@ runRaftNode nodeConfig@NodeConfig{..} initStateMachine logWriter = do
 handleEventLoop
    :: forall v m s. (Show v, MonadConc m, RaftStateMachine s v, RaftPersist m v, RaftSendRPC m v)
    => NodeConfig
-   -> (Text -> m ())
+   -> (TWLog -> m ())
    -> RaftT s v m ()
 handleEventLoop nodeConfig logWriter =
     handleEventLoop' =<< lift loadPersistentState
@@ -179,7 +179,7 @@ handleAction action =
 
 handleLogs
   :: (Show v, MonadConc m)
-  => (Text -> m ())
+  => (TWLog -> m ())
   -> TWLogs
   -> RaftT s v m ()
 handleLogs f logs = lift $ mapM_ f logs
