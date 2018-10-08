@@ -41,7 +41,7 @@ handleAppendEntries (NodeLeaderState ls)_ _  =
   pure (leaderResultState Noop ls)
 
 handleAppendEntriesResponse :: RPCHandler 'Leader AppendEntriesResponse v
-handleAppendEntriesResponse (NodeLeaderState ls) sender appendEntriesResp
+handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp
   -- If AppendEntries fails (aerSuccess == False) because of log inconsistency,
   -- decrement nextIndex and retry
   | not (aerSuccess appendEntriesResp) = do
@@ -63,6 +63,7 @@ handleAppendEntriesResponse (NodeLeaderState ls) sender appendEntriesResp
       -- Increment leader commit index if now a majority of followers have
       -- replicated an entry at a given term.
       newestLeaderState <- incrCommitIndex newLeaderState
+      tellLogWithState ns $ toS $ "HandleAppendEntriesResponse: " ++ show (aerSuccess appendEntriesResp)
       pure (leaderResultState Noop newestLeaderState)
 
 -- | Leaders should not respond to 'RequestVote' messages.

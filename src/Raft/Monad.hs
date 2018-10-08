@@ -2,6 +2,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE GADTs #-}
 
 module Raft.Monad where
 
@@ -24,8 +25,12 @@ import Raft.Types
 -- Raft Monad
 --------------------------------------------------------------------------------
 
-data TWLog = TWLog NodeId Text
-  deriving Show
+data TWLog = TWLog
+  { twNodeId :: NodeId
+  , twMsg :: Text
+  , twNodeState :: Maybe Text
+  } deriving Show
+
 type TWLogs = [TWLog]
 
 data TransitionWriter v = TransitionWriter
@@ -39,10 +44,22 @@ instance Semigroup (TransitionWriter v) where
 instance Monoid (TransitionWriter v) where
   mempty = TransitionWriter [] []
 
-tellLog :: Text -> TransitionM v ()
-tellLog s = do
+tellLog' :: Maybe (NodeState a) -> Text -> TransitionM v ()
+tellLog' nsM s = do
   nId <- asks configNodeId
-  tell (TransitionWriter [] [TWLog nId s])
+  tell (TransitionWriter [] [TWLog nId s (mode <$> nsM)])
+  where
+    mode ns = case ns of
+        NodeFollowerState _ -> "Follower"
+        NodeCandidateState _ -> "Candidate"
+        _ -> "Leader"
+
+
+tellLogWithState :: NodeState a -> Text -> TransitionM v ()
+tellLogWithState ns = tellLog' (Just ns)
+
+tellLog :: Text -> TransitionM v ()
+tellLog = tellLog' Nothing
 
 tellAction :: Action v -> TransitionM v ()
 tellAction a = tell (TransitionWriter [a] [])

@@ -110,14 +110,11 @@ getNodesInfo = do
 -- Handle actions and events
 ----------------------------------------
 
-testHandleLogs :: [NodeId] -> (TWLog -> IO ()) -> TWLogs -> Scenario ()
-testHandleLogs nIds f logs = liftIO $
-  case nIds of
-    [] -> mapM_ f' logs
-    _ -> mapM_ f' (filter f'' logs)
-    where
-      f' l@(TWLog _ s) = f l
-      f'' (TWLog nId _) = nId `elem` nIds
+testHandleLogs :: Maybe [NodeId] -> (TWLog -> IO ()) -> TWLogs -> Scenario ()
+testHandleLogs nIdsM f logs = liftIO $
+  case nIdsM of
+    Nothing -> mapM_ f logs
+    Just nIds -> mapM_ f (filter (\l -> twNodeId l `elem` nIds) logs)
 
 
 testHandleActions :: NodeId -> [Action TestValue] -> Scenario ()
@@ -134,7 +131,8 @@ testHandleAction sender action = case action of
   RespondToClient clientId -> notImplemented
   ResetTimeoutTimer _ _ -> noop
   where
-    noop = liftIO $ print $ "Action: " ++ show action
+    noop = pure ()
+      --liftIO $ print $ "Action: " ++ show action
 
 testHandleEvent :: NodeId -> Event TestValue -> Scenario ()
 testHandleEvent nodeId event = do
@@ -143,7 +141,7 @@ testHandleEvent nodeId event = do
   let (newRaftState, newPersistentState, transitionW) = handleEvent nodeConfig raftState persistentState event
   testUpdateState nodeId event newRaftState newPersistentState nodeMessages
   testHandleActions nodeId (twActions transitionW)
-  testHandleLogs [node0] print (twLogs transitionW)
+  testHandleLogs (Just [node0]) print (twLogs transitionW)
 
 ----------------------------
 -- Test raft events
