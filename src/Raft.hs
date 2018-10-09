@@ -192,7 +192,7 @@ handleLogs f logs = lift $ mapM_ f logs
 rpcHandler :: (MonadConc m, RaftRecvRPC m v) => Chan m (Event v) -> m ()
 rpcHandler eventChan =
   forever $
-    recvRPC >>= \rpcMsg ->
+    receiveRPC >>= \rpcMsg ->
       writeChan eventChan (Message rpcMsg)
 
 -- | Producer for the election timeout event
