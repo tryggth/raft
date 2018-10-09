@@ -43,7 +43,7 @@ class RaftSendRPC m v where
   sendRPC :: NodeId -> Message v -> m ()
 
 class RaftRecvRPC m v where
-  recvRPC :: m (Message v)
+  receiveRPC :: m (Message v)
 
 --- | The underlying raft state machine. Functional dependency permitting only
 --a single state machine command to be defined to update the state machine.

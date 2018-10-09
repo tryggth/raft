@@ -94,7 +94,7 @@ instance MonadConc m => RaftSendRPC (TestEnvT m) StoreCmd where
       Just c -> lift $ writeChan c msg
 
 instance MonadConc m => RaftRecvRPC (TestEnvT m) StoreCmd where
-  recvRPC = do
+  receiveRPC = do
     myNodeId <- asks nid
     nodeChanMap <- asks nodes
     cmd <- case Map.lookup myNodeId nodeChanMap of
