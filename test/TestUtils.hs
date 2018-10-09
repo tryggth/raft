@@ -4,11 +4,13 @@
 module TestUtils where
 
 import Protolude
+import qualified Data.Set as Set
 import qualified Data.Map as Map
 import qualified Data.Map.Merge.Lazy as Merge
 
 import Raft.NodeState
 import qualified Raft.NodeState
+import Raft.Config
 import Raft.Types
 
 isRaftLeader :: RaftNodeState v -> Bool
@@ -34,6 +36,43 @@ getCommittedLogIndex :: RaftNodeState v -> Index
 getCommittedLogIndex (RaftNodeState (NodeFollowerState FollowerState{..})) = fsCommitIndex
 getCommittedLogIndex (RaftNodeState (NodeCandidateState CandidateState{..})) = csCommitIndex
 getCommittedLogIndex (RaftNodeState (NodeLeaderState LeaderState{..})) = lsCommitIndex
+
+node0, node1, node2 :: NodeId
+node0 = "node0"
+node1 = "node1"
+node2 = "node2"
+
+client0 :: ClientId
+client0 = ClientId "client0"
+
+nodeIds :: NodeIds
+nodeIds = Set.fromList [node0, node1, node2]
+
+testConfigs :: [NodeConfig]
+testConfigs = [testConfig0, testConfig1, testConfig2]
+
+toMicroS :: Num n => n -> n
+toMicroS x = x * 100000
+
+testConfig0, testConfig1, testConfig2 :: NodeConfig
+testConfig0 = NodeConfig
+  { configNodeId = node0
+  , configNodeIds = nodeIds
+  , configElectionTimeout = toMicroS 150
+  , configHeartbeatTimeout = toMicroS 20
+  }
+testConfig1 = NodeConfig
+  { configNodeId = node1
+  , configNodeIds = nodeIds
+  , configElectionTimeout = toMicroS 100
+  , configHeartbeatTimeout = toMicroS 20
+  }
+testConfig2 = NodeConfig
+  { configNodeId = node2
+  , configNodeIds = nodeIds
+  , configElectionTimeout = toMicroS 150
+  , configHeartbeatTimeout = toMicroS 20
+  }
 
 -- | Zip maps using function. Throws away items left and right
 zipMapWith :: Ord k => (a -> b -> c) -> Map k a -> Map k b -> Map k c

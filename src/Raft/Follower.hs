@@ -18,8 +18,6 @@ module Raft.Follower (
 
 import Protolude
 
-import Control.Monad.Writer (tell)
-
 import Data.Sequence (Seq, takeWhileL)
 import Data.Set (singleton)
 
@@ -42,7 +40,7 @@ import Raft.Types
 -- Note: see 'PersistentState' datatype for discussion about not keeping the
 -- entire log in memory.
 handleAppendEntries :: forall v. RPCHandler 'Follower (AppendEntries v) v
-handleAppendEntries (NodeFollowerState fs) sender AppendEntries{..} = do
+handleAppendEntries ns@(NodeFollowerState fs) sender AppendEntries{..} = do
       PersistentState{..} <- get
       (success, newFollowerState) <-
         if aeTerm < psCurrentTerm
@@ -55,7 +53,7 @@ handleAppendEntries (NodeFollowerState fs) sender AppendEntries{..} = do
                     appendNewLogEntries aeEntries
                     pure (True, updateLeader fs)
                 | otherwise -> pure (False, fs)
-              Just logEntry -> do
+              Just logEntry ->
                 -- 2. Reply false if log doesn't contain an entry at
                 -- prevLogIndex
                 -- whose term matches prevLogTerm.
@@ -80,6 +78,7 @@ handleAppendEntries (NodeFollowerState fs) sender AppendEntries{..} = do
           , aerSuccess = success
           }
       resetElectionTimeout
+      tellLogWithState ns $ toS $ "HandleAppendEntries: " ++ show success
       pure (followerResultState Noop newFollowerState)
     where
       removeLogsFromIndex :: Index -> TransitionM v ()
@@ -106,7 +105,7 @@ handleAppendEntriesResponse (NodeFollowerState fs) _ _ =
   pure (followerResultState Noop fs)
 
 handleRequestVote :: RPCHandler 'Follower RequestVote v
-handleRequestVote (NodeFollowerState fs) sender RequestVote{..} = do
+handleRequestVote ns@(NodeFollowerState fs) sender RequestVote{..} = do
     PersistentState{..} <- get
     let voteGranted = giveVote psCurrentTerm psVotedFor psLog
     send sender RequestVoteResponse
@@ -114,6 +113,7 @@ handleRequestVote (NodeFollowerState fs) sender RequestVote{..} = do
       , rvrVoteGranted = voteGranted
       }
     modify $ \ps -> ps { psVotedFor = Just sender }
+    tellLogWithState ns $ toS $ "HandleRequestVote: " ++ show voteGranted
     pure $ followerResultState Noop fs
   where
     giveVote term mVotedFor log =

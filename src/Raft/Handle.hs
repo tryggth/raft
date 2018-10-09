@@ -14,6 +14,7 @@ import Protolude
 import Control.Monad.Writer.Strict
 
 import Data.Type.Bool
+import Data.Monoid
 import qualified Debug.Trace as DT
 
 import qualified Raft.Follower as Follower
@@ -35,14 +36,14 @@ handleEvent
   -> RaftNodeState v
   -> PersistentState v
   -> Event v
-  -> (RaftNodeState v, PersistentState v, [Action v])
+  -> (RaftNodeState v, PersistentState v, TransitionWriter v)
 handleEvent nodeConfig raftNodeState@(RaftNodeState initNodeState) persistentState event =
     -- Rules for all servers:
     case handleNewerRPCTerm of
-      (RaftNodeState resNodeState, persistentState', actions) ->
+      (RaftNodeState resNodeState, persistentState', transitionW) ->
         case handleEvent' (raftHandler resNodeState) nodeConfig resNodeState persistentState' event of
-          (ResultState _ resultState, persistentState'', actions') ->
-            (RaftNodeState resultState, persistentState'', actions ++ actions')
+          (ResultState _ resultState, persistentState'', transitionW') ->
+            (RaftNodeState resultState, persistentState'', transitionW <> transitionW')
   where
     raftHandler :: forall s. NodeState s -> RaftHandler s v
     raftHandler nodeState =
@@ -51,7 +52,7 @@ handleEvent nodeConfig raftNodeState@(RaftNodeState initNodeState) persistentSta
         NodeCandidateState _ -> candidateRaftHandler
         NodeLeaderState _ -> leaderRaftHandler
 
-    handleNewerRPCTerm :: (RaftNodeState v, PersistentState v, [Action v])
+    handleNewerRPCTerm :: (RaftNodeState v, PersistentState v, TransitionWriter v)
     handleNewerRPCTerm =
       case event of
         Message (RPC _ rpc) ->
@@ -70,10 +71,10 @@ handleEvent nodeConfig raftNodeState@(RaftNodeState initNodeState) persistentSta
                     resetElectionTimeout
                     pure (RaftNodeState nodeState)
               else pure raftNodeState
-        _ -> (raftNodeState, persistentState, [])
+        _ -> (raftNodeState, persistentState, mempty)
 
     convertToFollower :: NodeState s -> ResultState s v
-    convertToFollower nodeState = do
+    convertToFollower nodeState =
       case nodeState of
         NodeFollowerState _ ->
           ResultState HigherTermFoundFollower nodeState
@@ -138,7 +139,7 @@ handleEvent'
   -> NodeState s
   -> PersistentState v
   -> Event v
-  -> (ResultState s v, PersistentState v, [Action v])
+  -> (ResultState s v, PersistentState v, TransitionWriter v)
 handleEvent' raftHandler@RaftHandler{..} nodeConfig initNodeState persistentState event =
     runTransitionM nodeConfig persistentState $
       case event of

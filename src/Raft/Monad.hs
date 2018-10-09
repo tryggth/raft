@@ -2,12 +2,13 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE GADTs #-}
 
 module Raft.Monad where
 
 import Protolude
-import qualified Debug.Trace as DT
 import Control.Monad.RWS
+import Data.Monoid
 import qualified Data.Set as Set
 import qualified Data.Map as Map
 
@@ -24,15 +25,58 @@ import Raft.Types
 -- Raft Monad
 --------------------------------------------------------------------------------
 
+data TWLog = TWLog
+  { twNodeId :: NodeId
+  , twMsg :: Text
+  , twNodeState :: Maybe Text
+  } deriving Show
+
+type TWLogs = [TWLog]
+
+data TransitionWriter v = TransitionWriter
+  { twActions :: [Action v]
+  , twLogs :: TWLogs
+  } deriving (Show)
+
+instance Semigroup (TransitionWriter v) where
+  t1 <> t2 = TransitionWriter (twActions t1 <> twActions t2) (twLogs t1 <> twLogs t2)
+
+instance Monoid (TransitionWriter v) where
+  mempty = TransitionWriter [] []
+
+tellLog' :: Maybe (NodeState a) -> Text -> TransitionM v ()
+tellLog' nsM s = do
+  nId <- asks configNodeId
+  tell (TransitionWriter [] [TWLog nId s (mode <$> nsM)])
+  where
+    mode ns = case ns of
+        NodeFollowerState _ -> "Follower"
+        NodeCandidateState _ -> "Candidate"
+        _ -> "Leader"
+
+
+tellLogWithState :: NodeState a -> Text -> TransitionM v ()
+tellLogWithState ns = tellLog' (Just ns)
+
+tellLog :: Text -> TransitionM v ()
+tellLog = tellLog' Nothing
+
+tellAction :: Action v -> TransitionM v ()
+tellAction a = tell (TransitionWriter [a] [])
+
+tellActions :: [Action v] -> TransitionM v ()
+tellActions as = tell (TransitionWriter as [])
+
 newtype TransitionM v a = TransitionM
-  { unTransitionM :: RWS NodeConfig [Action v] (PersistentState v) a
-  } deriving (Functor, Applicative, Monad, MonadWriter [Action v], MonadReader NodeConfig, MonadState (PersistentState v))
+  { unTransitionM :: RWS NodeConfig (TransitionWriter v) (PersistentState v) a
+  } deriving (Functor, Applicative, Monad, MonadWriter (TransitionWriter v), MonadReader NodeConfig
+             , MonadState (PersistentState v))
 
 runTransitionM
   :: NodeConfig
   -> PersistentState v
   -> TransitionM v a
-  -> (a, PersistentState v, [Action v])
+  -> (a, PersistentState v, TransitionWriter v)
 runTransitionM nodeConfig persistentState transition =
   runRWS (unTransitionM transition) nodeConfig persistentState
 
@@ -59,39 +103,39 @@ broadcast msg = do
     Broadcast
       <$> asks (Set.filter (selfNodeId /=) . configNodeIds)
       <*> toRPCMessage msg
-  tell [action]
+  tellActions [action]
 
 send :: RPCType r v => NodeId -> r -> TransitionM v ()
 send nodeId msg = do
   action <- SendMessage nodeId <$> toRPCMessage msg
-  tell [action]
+  tellActions [action]
 
 uniqueBroadcast :: RPCType r v => Map NodeId r -> TransitionM v ()
 uniqueBroadcast msgs = do
   action <- SendMessages <$> mapM toRPCMessage msgs
-  tell [action]
+  tellActions [action]
 
 -- | Resets the election timeout.
 resetElectionTimeout :: TransitionM v ()
 resetElectionTimeout = do
   t <- fromIntegral <$> asks configElectionTimeout
-  tell [ResetTimeoutTimer ElectionTimeout t]
+  tellActions [ResetTimeoutTimer ElectionTimeout t]
 
 resetHeartbeatTimeout :: TransitionM v ()
 resetHeartbeatTimeout = do
   t <- fromIntegral <$> asks configHeartbeatTimeout
-  tell [ResetTimeoutTimer HeartbeatTimeout t]
+  tellActions [ResetTimeoutTimer HeartbeatTimeout t]
 
 redirectClientToLeader :: ClientId -> CurrentLeader -> TransitionM v ()
 redirectClientToLeader clientId currentLeader =
-  tell [RedirectClient clientId currentLeader]
+  tellActions [RedirectClient clientId currentLeader]
 
 applyLogEntry :: Index -> TransitionM v ()
 applyLogEntry idx = do
   mLogEntry <- lookupLogEntry idx <$> gets psLog
   case mLogEntry of
     Nothing -> panic "Cannot apply non existent log entry to state machine"
-    Just logEntry -> tell [ApplyCommittedLogEntry logEntry]
+    Just logEntry -> tellActions [ApplyCommittedLogEntry logEntry]
 
 incrementTerm :: TransitionM v ()
 incrementTerm = do

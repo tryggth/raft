@@ -1,5 +1,4 @@
 {-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TupleSections #-}
@@ -27,43 +26,6 @@ import Raft.Persistent
 import Raft.RPC
 import Raft.Types
 
--------------------
--- Setup
--------------------
-
-node0, node1, node2 :: NodeId
-node0 = "node0"
-node1 = "node1"
-node2 = "node2"
-
-client0 :: ClientId
-client0 = ClientId "client0"
-
-nodeIds :: NodeIds
-nodeIds = Set.fromList [node0, node1, node2]
-
-testConfigs :: [NodeConfig]
-testConfigs = [testConfig0, testConfig1, testConfig2]
-
-testConfig0, testConfig1, testConfig2 :: NodeConfig
-testConfig0 = NodeConfig
-  { configNodeId = node0
-  , configNodeIds = nodeIds
-  , configElectionTimeout = 150
-  , configHeartbeatTimeout = 20
-  }
-testConfig1 = NodeConfig
-  { configNodeId = node1
-  , configNodeIds = nodeIds
-  , configElectionTimeout = 150
-  , configHeartbeatTimeout = 20
-  }
-testConfig2 = NodeConfig
-  { configNodeId = node2
-  , configNodeIds = nodeIds
-  , configElectionTimeout = 150
-  , configHeartbeatTimeout = 20
-  }
 
 ------------------------------------
 -- Scenario Monad
@@ -148,6 +110,13 @@ getNodesInfo = do
 -- Handle actions and events
 ----------------------------------------
 
+testHandleLogs :: Maybe [NodeId] -> (TWLog -> IO ()) -> TWLogs -> Scenario ()
+testHandleLogs nIdsM f logs = liftIO $
+  case nIdsM of
+    Nothing -> mapM_ f logs
+    Just nIds -> mapM_ f (filter (\l -> twNodeId l `elem` nIds) logs)
+
+
 testHandleActions :: NodeId -> [Action TestValue] -> Scenario ()
 testHandleActions sender =
   mapM_ (testHandleAction sender)
@@ -162,16 +131,17 @@ testHandleAction sender action = case action of
   RespondToClient clientId -> notImplemented
   ResetTimeoutTimer _ _ -> noop
   where
-    noop = liftIO $ print $ "Action: " ++ show action
+    noop = pure ()
+      --liftIO $ print $ "Action: " ++ show action
 
 testHandleEvent :: NodeId -> Event TestValue -> Scenario ()
 testHandleEvent nodeId event = do
-  liftIO $ printIfNodes [node1] nodeId ("Received event: " ++ show event)
+  --liftIO $ printIfNodes [node1] nodeId ("Received event: " ++ show event)
   (nodeConfig, nodeMessages, raftState, persistentState) <- getNodeInfo nodeId
-  let (newRaftState, newPersistentState, actions) = handleEvent nodeConfig raftState persistentState event
+  let (newRaftState, newPersistentState, transitionW) = handleEvent nodeConfig raftState persistentState event
   testUpdateState nodeId event newRaftState newPersistentState nodeMessages
-  liftIO $ printIfNodes [node1] nodeId ("Generated actions: " ++ show actions)
-  testHandleActions nodeId actions
+  testHandleActions nodeId (twActions transitionW)
+  testHandleLogs (Just [node0]) print (twLogs transitionW)
 
 ----------------------------
 -- Test raft events

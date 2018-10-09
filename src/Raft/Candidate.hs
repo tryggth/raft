@@ -23,7 +23,6 @@ import Protolude
 import Control.Monad.Writer (tell)
 
 import qualified Data.Set as Set
-import qualified Debug.Trace as DT
 import qualified Data.Map as Map
 import qualified Data.Sequence as Seq
 
@@ -71,10 +70,10 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
       -- | rvrTerm < currentTerm -> DT.trace ("rvrTerm: " ++ show rvrTerm ++ ",
       --currentTerm: " ++ show currentTerm) pure $ candidateResultState Noop
       --candidateState
-      | rvrTerm > currentTerm -> DT.trace "rvrTerm > currentTerm" stepDown sender rvrTerm csCommitIndex csLastApplied
-      | not rvrVoteGranted -> DT.trace "not rvrVoteGranted" pure $ candidateResultState Noop candidateState
-      | Set.member sender csVotes -> DT.trace "Set.member sender csVotes" pure $ candidateResultState Noop candidateState
-      | otherwise -> DT.trace "otherwise" $ do
+      | rvrTerm > currentTerm -> stepDown sender rvrTerm csCommitIndex csLastApplied
+      | not rvrVoteGranted -> pure $ candidateResultState Noop candidateState
+      | Set.member sender csVotes -> pure $ candidateResultState Noop candidateState
+      | otherwise -> do
           let newCsVotes = Set.insert sender csVotes
 
           if not $ hasMajority cNodeIds newCsVotes

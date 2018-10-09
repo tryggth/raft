@@ -35,6 +35,7 @@ startTimer n (Timer tid lock) = do
         atomically $ do
           _ <- tryTakeTMVar tid
           putTMVar tid threadId
+
         threadDelay (fromIntegral n)
         atomically $ do
           putTMVar lock ()
