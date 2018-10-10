@@ -21,9 +21,12 @@ import Protolude
 import qualified Data.Map as Map
 import Data.Sequence (Seq((:<|),Empty), (><))
 import qualified Data.Sequence as Seq
+import Control.Monad.RWS
 
 import Raft.NodeState
 import Raft.RPC
+import Raft.Action
+import Raft.Client
 import Raft.Event
 import Raft.Persistent
 import Raft.Config
@@ -63,6 +66,9 @@ handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp
       -- Increment leader commit index if now a majority of followers have
       -- replicated an entry at a given term.
       newestLeaderState <- incrCommitIndex newLeaderState
+      when (lsCommitIndex newestLeaderState > lsCommitIndex newLeaderState) $ do
+        Just clientId <- lastLogEntryClientId <$> gets psLog
+        tellActions [RespondToClient clientId (ClientWriteRes (lsCommitIndex newestLeaderState))]
       tellLogWithState ns $ toS $ "HandleAppendEntriesResponse: " ++ show (aerSuccess appendEntriesResp)
       pure (leaderResultState Noop newestLeaderState)
 
@@ -87,7 +93,7 @@ handleTimeout (NodeLeaderState ls) timeout =
       pure (leaderResultState SendHeartbeat ls)
 
 handleClientRequest :: ClientReqHandler 'Leader v
-handleClientRequest (NodeLeaderState ls) (ClientReq clientId v) = do
+handleClientRequest (NodeLeaderState ls) (ClientWriteReq clientId v) = do
     lastLogEntryIndex <- lastLogEntryIndex <$> gets psLog
     broadcast =<< mkAppendEntriesRPC =<< mkNewLogEntry lastLogEntryIndex
     pure (leaderResultState Noop ls)
@@ -128,7 +134,7 @@ incrCommitIndex leaderState@LeaderState{..} = do
 -- | Construct bespoke AppendEntriesRPC values for each follower, with respect
 -- to their current 'nextIndex' stored in the LeaderState.
 appendEntriesRPCs :: LeaderState -> TransitionM v (Map NodeId (AppendEntries v))
-appendEntriesRPCs leaderState@LeaderState{..} = do
+appendEntriesRPCs leaderState@LeaderState{..} =
   forM lsNextIndex $ \nextIndex -> do
     logEntries <- flip takeLogEntriesUntil nextIndex <$> gets psLog
     case logEntries of

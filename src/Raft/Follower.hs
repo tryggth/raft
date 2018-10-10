@@ -23,6 +23,7 @@ import Data.Set (singleton)
 
 import Raft.NodeState
 import Raft.RPC
+import Raft.Client
 import Raft.Event
 import Raft.Persistent
 import Raft.Config
@@ -153,6 +154,7 @@ handleTimeout (NodeFollowerState fs) timeout =
 -- | When a client handles a client request, it redirects the client to the
 -- current leader by responding with the current leader id, if it knows of one.
 handleClientRequest :: ClientReqHandler 'Follower v
-handleClientRequest (NodeFollowerState fs) (ClientReq clientId _) = do
+handleClientRequest (NodeFollowerState fs) (ClientWriteReq clientId _)= do
   redirectClientToLeader clientId (fsCurrentLeader fs)
   pure (followerResultState Noop fs)
+

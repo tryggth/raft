@@ -28,6 +28,7 @@ import qualified Data.Sequence as Seq
 
 import Raft.NodeState
 import Raft.RPC
+import Raft.Client
 import Raft.Event
 import Raft.Action
 import Raft.Persistent
@@ -125,9 +126,10 @@ handleTimeout (NodeCandidateState candidateState@CandidateState{..}) timeout =
 -- instead of simply not responding such that the client can know that the node
 -- is live but that there is an election taking place.
 handleClientRequest :: ClientReqHandler 'Candidate v
-handleClientRequest (NodeCandidateState candidateState) (ClientReq clientId _) = do
+handleClientRequest (NodeCandidateState candidateState) (ClientWriteReq clientId _) = do
   redirectClientToLeader clientId NoLeader
   pure (candidateResultState Noop candidateState)
+
 
 --------------------------------------------------------------------------------
 

@@ -66,6 +66,10 @@ lastLogEntryIndex log =
     Nothing -> index0
     Just entry -> entryIndex entry
 
+lastLogEntryClientId :: Log v -> Maybe ClientId
+lastLogEntryClientId log =
+  entryClientId <$> lastLogEntry log
+
 -- | Get the last log entry index and term
 lastLogEntryIndexAndTerm :: Log v -> (Index, Term)
 lastLogEntryIndexAndTerm log =

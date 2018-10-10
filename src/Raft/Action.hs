@@ -6,6 +6,7 @@ import Protolude
 
 import Numeric.Natural
 
+import Raft.Client
 import Raft.NodeState
 import Raft.RPC
 import Raft.Log
@@ -18,8 +19,8 @@ data Action v
   | Broadcast NodeIds (Message v) -- ^ Broadcast the same message to all nodes
 
   | RedirectClient ClientId CurrentLeader -- ^ Redirect a client to the current leader
-  | RespondToClient ClientId -- ^ Respond to client after successful command application
+  | RespondToClient ClientId ClientWriteRes -- ^ Respond to client after successful command application
 
   | ApplyCommittedLogEntry (Entry v) -- ^ Apply a replicated log entry to state machine
-  | ResetTimeoutTimer Timeout Natural -- ^ Reset a timeout timer
+  | ResetTimeoutTimer Timeout -- ^ Reset a timeout timer
   deriving (Show)

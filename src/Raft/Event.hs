@@ -4,6 +4,7 @@ module Raft.Event where
 
 import Protolude
 
+import Raft.Client
 import Raft.RPC
 import Raft.Types
 
@@ -14,12 +15,9 @@ data Timeout
     -- ^ Timeout in which a leader will send AppendEntries RPC to all followers
   deriving (Show)
 
-data ClientReq v
-  = ClientReq ClientId v
-  deriving (Show)
-
 data Event v
   = Message (Message v)
-  | ClientRequest (ClientReq v)
+  | ClientWriteRequest (ClientWriteReq v)
+  | ClientReadRequest ClientReadReq
   | Timeout Timeout
   deriving (Show)

@@ -24,8 +24,10 @@ import Control.Monad.Trans.Class
 import qualified Data.Map as Map
 
 import Numeric.Natural
+import System.Random (StdGen, randomR, RandomGen, mkStdGen)
 
 import Raft.Action
+import Raft.Client
 import Raft.Config
 import Raft.Event
 import Raft.Handle
@@ -44,6 +46,9 @@ class RaftSendRPC m v where
 
 class RaftRecvRPC m v where
   receiveRPC :: m (Message v)
+
+class RaftClientRPC m s where
+  sendClientRPC :: ClientId -> ClientReadRes s -> m ()
 
 --- | The underlying raft state machine. Functional dependency permitting only
 --a single state machine command to be defined to update the state machine.
@@ -104,25 +109,27 @@ runRaftT raftState raftEnv =
 ------------------------------------------------------------------------------
 
 runRaftNode
-   :: (Show v, MonadConc m, RaftStateMachine s v, RaftSendRPC m v, RaftRecvRPC m v, RaftPersist m v)
+   :: (Show v, MonadConc m, RaftStateMachine s v, RaftSendRPC m v, RaftRecvRPC m v, RaftPersist m v, RaftClientRPC m s)
    => NodeConfig
    -> s
    -> (TWLog -> m())
    -> m ()
 runRaftNode nodeConfig@NodeConfig{..} initStateMachine logWriter = do
   eventChan <- newChan
-  electionTimer <- newTimer
-  heartbeatTimer <- newTimer
+  electionTimer <- newTimer configElectionTimeout
+  heartbeatTimer <- newTimer (configHeartbeatTimeout, configHeartbeatTimeout)
 
-  fork (electionTimeoutTimer configElectionTimeout electionTimer eventChan)
-  fork (heartbeatTimeoutTimer configElectionTimeout electionTimer eventChan)
+  fork (electionTimeoutTimer electionTimer eventChan)
+  fork (heartbeatTimeoutTimer electionTimer eventChan)
   fork (rpcHandler eventChan)
+
   let raftState = RaftState initRaftNodeState initStateMachine
       raftEnv = RaftEnv eventChan electionTimer heartbeatTimer
   runRaftT raftState raftEnv (handleEventLoop nodeConfig logWriter)
 
+
 handleEventLoop
-   :: forall v m s. (Show v, MonadConc m, RaftStateMachine s v, RaftPersist m v, RaftSendRPC m v)
+   :: forall v m s. (Show v, MonadConc m, RaftStateMachine s v, RaftPersist m v, RaftSendRPC m v, RaftClientRPC m s)
    => NodeConfig
    -> (TWLog -> m ())
    -> RaftT s v m ()
@@ -132,13 +139,18 @@ handleEventLoop nodeConfig logWriter =
     handleEventLoop' :: PersistentState v -> RaftT s v m ()
     handleEventLoop' persistentState = do
       event <- lift . readChan =<< asks serverEventChan
-      let (resRaftNodeState, resPersistentState, transitionW) =
-            Raft.Handle.handleEvent nodeConfig initRaftNodeState persistentState event
-      lift $ savePersistentState resPersistentState
-      updateRaftNodeState resRaftNodeState
-      handleActions $ twActions transitionW
-      handleLogs logWriter $ twLogs transitionW
-      handleEventLoop' resPersistentState
+      case event of
+        ClientReadRequest (ClientReadReq cid) -> do
+          sm <- gets serverStateMachine
+          lift $ sendClientRPC cid (ClientReadRes sm)
+        _ -> do
+          let (resRaftNodeState, resPersistentState, transitionW) =
+                Raft.Handle.handleEvent nodeConfig initRaftNodeState persistentState event
+          lift $ savePersistentState resPersistentState
+          updateRaftNodeState resRaftNodeState
+          handleActions $ twActions transitionW
+          handleLogs logWriter $ twLogs transitionW
+          handleEventLoop' resPersistentState
 
     updateRaftNodeState :: RaftNodeState v -> RaftT s v m ()
     updateRaftNodeState newRaftNodeState =
@@ -163,19 +175,19 @@ handleAction action =
         lift (sendRPC nid msg)
     Broadcast nids msg -> mapConcurrently_ (lift . flip sendRPC msg) nids
     RedirectClient (ClientId cid) currLdr -> undefined
-    RespondToClient cid -> undefined
+    RespondToClient cid _ -> undefined
     ApplyCommittedLogEntry entry ->
       modify $ \raftState -> do
         let stateMachine = serverStateMachine raftState
             v = entryValue entry
         raftState { serverStateMachine = applyCommittedLogEntry stateMachine v }
-    ResetTimeoutTimer tout n ->
+    ResetTimeoutTimer tout ->
       case tout of
-        ElectionTimeout -> resetServerTimer serverElectionTimer n
-        HeartbeatTimeout -> resetServerTimer serverHeartbeatTimer n
+        ElectionTimeout -> resetServerTimer serverElectionTimer
+        HeartbeatTimeout -> resetServerTimer serverHeartbeatTimer
   where
-    resetServerTimer f n =
-      lift . resetTimer n =<< asks f
+    resetServerTimer f =
+      lift . resetTimer =<< asks f
 
 handleLogs
   :: (Show v, MonadConc m)
@@ -189,23 +201,36 @@ handleLogs f logs = lift $ mapM_ f logs
 ------------------------------------------------------------------------------
 
 -- | Producer for rpc message events
-rpcHandler :: (MonadConc m, RaftRecvRPC m v) => Chan m (Event v) -> m ()
+rpcHandler
+  :: (Show v, MonadConc m, RaftRecvRPC m v)
+  => Chan m (Event v)
+  -> m ()
 rpcHandler eventChan =
   forever $
     receiveRPC >>= \rpcMsg ->
       writeChan eventChan (Message rpcMsg)
 
 -- | Producer for the election timeout event
-electionTimeoutTimer :: MonadConc m => Natural -> Timer m -> Chan m (Event v)
+electionTimeoutTimer :: MonadConc m => Timer m -> Chan m (Event v)
  -> m ()
-electionTimeoutTimer n timer eventChan =
+electionTimeoutTimer timer eventChan =
   forever $ do
-    startTimer n timer >> waitTimer timer
+    startTimer timer >> waitTimer timer
     writeChan eventChan (Timeout ElectionTimeout)
 
+
 -- | Producer for the heartbeat timeout event
-heartbeatTimeoutTimer :: MonadConc m => Natural -> Timer m -> Chan m (Event v) -> m ()
-heartbeatTimeoutTimer n timer eventChan =
+heartbeatTimeoutTimer :: MonadConc m => Timer m -> Chan m (Event v) -> m ()
+heartbeatTimeoutTimer timer eventChan =
   forever $ do
-    startTimer n timer >> waitTimer timer
+    startTimer timer >> waitTimer timer
     writeChan eventChan (Timeout HeartbeatTimeout)
+
+natsToInteger :: (Natural, Natural) -> (Integer, Integer)
+natsToInteger (t1, t2) = (fromIntegral t1, fromIntegral t2)
+
+rndTimeout :: (Natural, Natural) -> Natural
+rndTimeout t = fromIntegral $ fst $ randomR (natsToInteger t) initialStdGen
+
+initialStdGen :: StdGen
+initialStdGen = mkStdGen 0

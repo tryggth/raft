@@ -16,6 +16,7 @@ import qualified Test.Tasty.HUnit as HUnit
 import TestUtils
 
 import Raft.Action
+import Raft.Client
 import Raft.Config
 import Raft.Event
 import Raft.Handle (handleEvent)
@@ -128,8 +129,8 @@ testHandleAction sender action = case action of
   Broadcast nIds msg -> mapM_ (`testHandleEvent` Message msg) nIds
   ApplyCommittedLogEntry entry -> testApplyCommittedLogEntry sender entry
   RedirectClient clientId currentLeader -> notImplemented
-  RespondToClient clientId -> notImplemented
-  ResetTimeoutTimer _ _ -> noop
+  RespondToClient clientId _ -> noop
+  ResetTimeoutTimer _ -> noop
   where
     noop = pure ()
       --liftIO $ print $ "Action: " ++ show action
@@ -151,9 +152,9 @@ testInitLeader :: NodeId -> Scenario ()
 testInitLeader nId =
   testHandleEvent nId (Timeout ElectionTimeout)
 
-testClientRequest :: NodeId -> Scenario ()
-testClientRequest nId =
-  testHandleEvent nId (ClientRequest (ClientReq client0 TestValue))
+testClientWriteRequest :: NodeId -> Scenario ()
+testClientWriteRequest nId =
+  testHandleEvent nId (ClientWriteRequest (ClientWriteReq client0 TestValue))
 
 testHeartbeat :: NodeId -> Scenario ()
 testHeartbeat sender = do
@@ -201,7 +202,7 @@ unit_append_entries_client_request :: IO ()
 unit_append_entries_client_request = runScenario $ do
   ---------------------------------
   testInitLeader node0
-  testClientRequest node0
+  testClientWriteRequest node0
   ---------------------------------
 
   persistentStates0 <- gets $ fmap snd . testNodeStates

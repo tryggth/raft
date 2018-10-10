@@ -33,6 +33,7 @@ import TestUtils
 import Numeric.Natural
 
 import Raft.Action
+import Raft.Client
 import Raft.Config
 import Raft.Event hiding (Message)
 import Raft.Handle (handleEvent)
@@ -60,11 +61,14 @@ instance RaftStateMachine Store StoreCmd where
 
 type NodeChanMap m = Map NodeId (Chan m (Message StoreCmd))
 
+type ClientChanMap m = Map ClientId (Chan m Store)
+
 data TestEnv m = TestEnv
   { store :: TVar (STM m) Store
   , pstate :: TVar (STM m) (PersistentState StoreCmd)
   , nodes :: NodeChanMap m
   , nid :: NodeId
+  , clients :: ClientChanMap m
   }
 
 newtype TestEnvT m a = TestEnvT { unTestEnvT :: ReaderT (TestEnv m) m a }
@@ -97,10 +101,16 @@ instance MonadConc m => RaftRecvRPC (TestEnvT m) StoreCmd where
   receiveRPC = do
     myNodeId <- asks nid
     nodeChanMap <- asks nodes
-    cmd <- case Map.lookup myNodeId nodeChanMap of
+    case Map.lookup myNodeId nodeChanMap of
       Nothing -> panic $ toS $ "RecvRPC: " ++ show myNodeId ++ " .Wtf bro"
       Just c -> lift $ readChan c
-    pure cmd
+
+instance MonadConc m => RaftClientRPC (TestEnvT m) Store where
+  sendClientRPC cid (ClientReadRes sm) = do
+    clientChanMap <- asks clients
+    case Map.lookup cid clientChanMap of
+      Nothing -> panic $ toS $ "SendClientRPC: " ++ show cid ++ " . Wtf bro"
+      Just c -> lift $ writeChan c sm
 
 mkNodeTestEnv :: MonadConc m => NodeId -> NodeChanMap m -> m (TestEnv m)
 mkNodeTestEnv nid chanMap = do
@@ -116,18 +126,18 @@ mkNodeTestEnv nid chanMap = do
 --test_auto :: TestTree
 --test_auto = testAuto $ do
 
---testauto :: IO [(Either Failure (), Trace)]
---testauto =
-  --runSCT defaultWay defaultMemType $ do
+testauto :: IO [(Either Failure (), Trace)]
+testauto =
+  runSCT defaultWay defaultMemType $ do
 
-  --nodeChans <- replicateM 2 newChan
-  --let nodeChanMap = Map.fromList $ zip [node0, node1] nodeChans
+  nodeChans <- replicateM 2 newChan
+  let nodeChanMap = Map.fromList $ zip [node0, node1] nodeChans
 
-  --testEnv0 <- mkNodeTestEnv node0 nodeChanMap
-  --testEnv1 <- mkNodeTestEnv node1 nodeChanMap
-  --let testConfig0' = testConfig0 { configNodeIds = Set.fromList [node0, node1] }
-  --let testConfig1' = testConfig1 { configNodeIds = Set.fromList [node0, node1] }
+  testEnv0 <- mkNodeTestEnv node0 nodeChanMap
+  testEnv1 <- mkNodeTestEnv node1 nodeChanMap
+  let testConfig0' = testConfig0 { configNodeIds = Set.fromList [node0, node1] }
+  let testConfig1' = testConfig1 { configNodeIds = Set.fromList [node0, node1] }
 
-  --fork $ runTestEnvT (DT.trace "TEST 0" testEnv0) (runRaftNode testConfig0' initStore)
-  --runTestEnvT testEnv1 (runRaftNode testConfig1' initStore)
+  fork $ runTestEnvT testEnv0 (runRaftNode testConfig0' initStore (const $ pure ()))
+  runTestEnvT testEnv1 (runRaftNode testConfig1' initStore (const $ pure ()))
 

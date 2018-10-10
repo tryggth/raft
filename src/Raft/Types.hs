@@ -21,7 +21,7 @@ type NodeId = ByteString
 type NodeIds = Set NodeId
 
 newtype ClientId = ClientId NodeId
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 newtype LeaderId = LeaderId { unLeaderId :: NodeId }
   deriving (Show, Eq)

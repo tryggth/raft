@@ -13,6 +13,7 @@ import qualified Data.Set as Set
 import qualified Data.Map as Map
 
 import Raft.Action
+import Raft.Client
 import Raft.Config
 import Raft.Event
 import Raft.Log
@@ -86,7 +87,7 @@ runTransitionM nodeConfig persistentState transition =
 
 type RPCHandler s r v = RPCType r v => NodeState s -> NodeId -> r -> TransitionM v (ResultState s v)
 type TimeoutHandler s v = NodeState s -> Timeout -> TransitionM v (ResultState s v)
-type ClientReqHandler s v = NodeState s -> ClientReq v -> TransitionM v (ResultState s v)
+type ClientReqHandler s v = NodeState s -> ClientWriteReq v -> TransitionM v (ResultState s v)
 
 --------------------------------------------------------------------------------
 -- RWS Helpers
@@ -117,14 +118,10 @@ uniqueBroadcast msgs = do
 
 -- | Resets the election timeout.
 resetElectionTimeout :: TransitionM v ()
-resetElectionTimeout = do
-  t <- fromIntegral <$> asks configElectionTimeout
-  tellActions [ResetTimeoutTimer ElectionTimeout t]
+resetElectionTimeout = tellActions [ResetTimeoutTimer ElectionTimeout]
 
 resetHeartbeatTimeout :: TransitionM v ()
-resetHeartbeatTimeout = do
-  t <- fromIntegral <$> asks configHeartbeatTimeout
-  tellActions [ResetTimeoutTimer HeartbeatTimeout t]
+resetHeartbeatTimeout = tellActions [ResetTimeoutTimer HeartbeatTimeout]
 
 redirectClientToLeader :: ClientId -> CurrentLeader -> TransitionM v ()
 redirectClientToLeader clientId currentLeader =

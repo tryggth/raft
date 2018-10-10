@@ -11,7 +11,7 @@ import Raft.Types
 data NodeConfig = NodeConfig
   { configNodeId :: NodeId
   , configNodeIds :: NodeIds
-  , configElectionTimeout :: Natural
+  , configElectionTimeout :: (Natural, Natural)
   , configHeartbeatTimeout :: Natural
   } deriving (Show)
 

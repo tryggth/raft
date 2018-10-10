@@ -144,8 +144,9 @@ handleEvent' raftHandler@RaftHandler{..} nodeConfig initNodeState persistentStat
     runTransitionM nodeConfig persistentState $
       case event of
         Message msg -> handleMessage msg
-        ClientRequest crq -> handleClientRequest initNodeState crq
+        ClientWriteRequest crq -> handleClientRequest initNodeState crq
         Timeout tout -> handleTimeout initNodeState tout
+        ClientReadRequest _ -> panic "No read requests here"
   where
     handleMessage :: Message v -> TransitionM v (ResultState s v)
     handleMessage (RPC sender rpc) = do
