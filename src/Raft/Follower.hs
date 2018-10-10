@@ -79,7 +79,6 @@ handleAppendEntries ns@(NodeFollowerState fs) sender AppendEntries{..} = do
           , aerSuccess = success
           }
       resetElectionTimeout
-      tellLogWithState ns $ toS $ "HandleAppendEntries: " ++ show success
       pure (followerResultState Noop newFollowerState)
     where
       removeLogsFromIndex :: Index -> TransitionM v ()
@@ -114,7 +113,6 @@ handleRequestVote ns@(NodeFollowerState fs) sender RequestVote{..} = do
       , rvrVoteGranted = voteGranted
       }
     modify $ \ps -> ps { psVotedFor = Just sender }
-    tellLogWithState ns $ toS $ "HandleRequestVote: " ++ show voteGranted
     pure $ followerResultState Noop fs
   where
     giveVote term mVotedFor log =
@@ -141,15 +139,13 @@ handleRequestVoteResponse (NodeFollowerState fs) _ _  =
 
 -- | Follower converts to Candidate if handling ElectionTimeout
 handleTimeout :: TimeoutHandler 'Follower v
-handleTimeout (NodeFollowerState fs) timeout =
+handleTimeout ns@(NodeFollowerState fs) timeout =
   case timeout of
-    ElectionTimeout ->
+    ElectionTimeout -> do
       candidateResultState StartElection <$>
         updateElectionTimeoutCandidateState (fsCommitIndex fs) (fsLastApplied fs)
-    -- TODO: Is the response the same in both cases?
-    HeartbeatTimeout ->
-      candidateResultState StartElection <$>
-        updateElectionTimeoutCandidateState (fsCommitIndex fs) (fsLastApplied fs)
+    -- Follower should ignore heartbeat timeout events
+    HeartbeatTimeout -> pure (followerResultState Noop fs)
 
 -- | When a client handles a client request, it redirects the client to the
 -- current leader by responding with the current leader id, if it knows of one.

@@ -28,6 +28,7 @@ dependencies:
 - concurrency
 - transformers
 - exceptions
+- cereal
 - random
 
 default-extensions:
@@ -39,7 +40,7 @@ library:
   source-dirs: src
 
 executables:
-  raft-exe:
+  raft-example:
     main:                Main.hs
     source-dirs:         app
     ghc-options:
@@ -48,6 +49,10 @@ executables:
     - -with-rtsopts=-N
     dependencies:
     - raft
+    - network-simple
+    - bytestring
+    - stm
+    - word8
 
 tests:
   raft-test:

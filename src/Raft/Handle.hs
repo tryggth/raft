@@ -32,7 +32,8 @@ import Raft.Types
 
 -- | Main entry point for handling events
 handleEvent
-  :: forall v. NodeConfig
+  :: forall v. Show v
+  => NodeConfig
   -> RaftNodeState v
   -> PersistentState v
   -> Event v
@@ -134,30 +135,39 @@ leaderRaftHandler = RaftHandler
   }
 
 handleEvent'
-  :: forall s v. RaftHandler s v
+  :: forall s v. Show v
+  => RaftHandler s v
   -> NodeConfig
   -> NodeState s
   -> PersistentState v
   -> Event v
   -> (ResultState s v, PersistentState v, TransitionWriter v)
 handleEvent' raftHandler@RaftHandler{..} nodeConfig initNodeState persistentState event =
-    runTransitionM nodeConfig persistentState $
+    runTransitionM nodeConfig persistentState $ do
       case event of
         Message msg -> handleMessage msg
-        ClientWriteRequest crq -> handleClientRequest initNodeState crq
-        Timeout tout -> handleTimeout initNodeState tout
+        ClientWriteRequest crq -> do
+          tellLogWithState initNodeState (show crq)
+          handleClientRequest initNodeState crq
+        Timeout tout -> do
+          tellLogWithState initNodeState (show tout)
+          handleTimeout initNodeState tout
         ClientReadRequest _ -> panic "No read requests here"
   where
     handleMessage :: Message v -> TransitionM v (ResultState s v)
     handleMessage (RPC sender rpc) = do
       resState@(ResultState transition newNodeState) <- case rpc of
-        AppendEntriesRPC appendEntries ->
+        AppendEntriesRPC appendEntries -> do
+          tellLogWithState initNodeState (show appendEntries)
           handleAppendEntries initNodeState sender appendEntries
-        AppendEntriesResponseRPC appendEntriesResp ->
+        AppendEntriesResponseRPC appendEntriesResp -> do
+          tellLogWithState initNodeState (show appendEntriesResp)
           handleAppendEntriesResponse initNodeState sender appendEntriesResp
-        RequestVoteRPC requestVote ->
+        RequestVoteRPC requestVote -> do
+          tellLogWithState initNodeState (show requestVote)
           handleRequestVote initNodeState sender requestVote
-        RequestVoteResponseRPC requestVoteResp ->
+        RequestVoteResponseRPC requestVoteResp -> do
+          tellLogWithState initNodeState (show requestVoteResp)
           handleRequestVoteResponse initNodeState sender requestVoteResp
 
       -- If commitIndex > lastApplied: increment lastApplied, apply
@@ -166,6 +176,7 @@ handleEvent' raftHandler@RaftHandler{..} nodeConfig initNodeState persistentStat
         if commitIndex newNodeState > lastApplied newNodeState
           then incrLastApplied newNodeState
           else pure newNodeState
+
       pure $ ResultState transition newestNodeState
 
     incrLastApplied :: NodeState s' -> TransitionM v (NodeState s')

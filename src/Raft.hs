@@ -5,20 +5,22 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Raft where
 
-import Protolude hiding (Chan, newChan, readChan, writeChan, STM)
+import Protolude hiding (STM, TChan, newTChan, readTChan, writeTChan, atomically)
 
-import Control.Concurrent.Classy
-import Control.Concurrent.Classy.Async
-import Control.Concurrent.Classy.STM
-import Control.Monad.Catch
+import Control.Monad.Conc.Class
+import Control.Monad.STM.Class
 import Control.Concurrent.STM.Timer
+import Control.Concurrent.Classy.STM.TChan
+import Control.Concurrent.Classy.Async
 
+import Control.Monad.Catch
 import Control.Monad.Trans.Class
 
 import qualified Data.Map as Map
@@ -78,29 +80,28 @@ data RaftState s v = RaftState
 
 -- | The raft server environment composed of the concurrent variables used in
 -- the effectful raft layer.
-data RaftEnv m v = RaftEnv
-  { serverEventChan :: Chan m (Event v)
+data RaftEnv s v m = RaftEnv
+  { serverEventChan :: TChan (STM m) (Event v)
   , serverElectionTimer :: Timer m
   , serverHeartbeatTimer :: Timer m
   }
 
 newtype RaftT s v m a = RaftT
-  { unRaftT :: ReaderT (RaftEnv m v) (StateT (RaftState s v) m) a
-  } deriving (Functor, Applicative, Monad, MonadReader (RaftEnv m v), MonadState (RaftState s v), Alternative, MonadPlus)
+  { unRaftT :: ReaderT (RaftEnv s v m) (StateT (RaftState s v) m) a
+  } deriving (Functor, Applicative, Monad, MonadReader (RaftEnv s v m), MonadState (RaftState s v), Alternative, MonadPlus)
 
 instance MonadTrans (RaftT s m) where
   lift = RaftT . lift . lift
 
 deriving instance MonadThrow m => MonadThrow (RaftT s v m)
 deriving instance MonadCatch m => MonadCatch (RaftT s v m)
-deriving instance MonadSTM m => MonadSTM (RaftT s v m)
 deriving instance MonadMask m => MonadMask (RaftT s v m)
 deriving instance MonadConc m => MonadConc (RaftT s v m)
 
 runRaftT
   :: MonadConc m
   => RaftState s v
-  -> RaftEnv m v
+  -> RaftEnv s v m
   -> RaftT s v m ()
   -> m ()
 runRaftT raftState raftEnv =
@@ -109,18 +110,26 @@ runRaftT raftState raftEnv =
 ------------------------------------------------------------------------------
 
 runRaftNode
-   :: (Show v, MonadConc m, RaftStateMachine s v, RaftSendRPC m v, RaftRecvRPC m v, RaftPersist m v, RaftClientRPC m s)
+   :: forall s v m.
+     ( Show v
+     , MonadConc m
+     , RaftStateMachine s v
+     , RaftSendRPC m v
+     , RaftRecvRPC m v
+     , RaftPersist m v
+     , RaftClientRPC m s
+     )
    => NodeConfig
    -> s
    -> (TWLog -> m())
    -> m ()
 runRaftNode nodeConfig@NodeConfig{..} initStateMachine logWriter = do
-  eventChan <- newChan
+  eventChan <- atomically newTChan
   electionTimer <- newTimer configElectionTimeout
   heartbeatTimer <- newTimer (configHeartbeatTimeout, configHeartbeatTimeout)
 
   fork (electionTimeoutTimer electionTimer eventChan)
-  fork (heartbeatTimeoutTimer electionTimer eventChan)
+  fork (heartbeatTimeoutTimer heartbeatTimer eventChan)
   fork (rpcHandler eventChan)
 
   let raftState = RaftState initRaftNodeState initStateMachine
@@ -129,23 +138,31 @@ runRaftNode nodeConfig@NodeConfig{..} initStateMachine logWriter = do
 
 
 handleEventLoop
-   :: forall v m s. (Show v, MonadConc m, RaftStateMachine s v, RaftPersist m v, RaftSendRPC m v, RaftClientRPC m s)
+   :: forall v m s.
+      ( Show v
+      , MonadConc m
+      , RaftStateMachine s v
+      , RaftPersist m v
+      , RaftSendRPC m v
+      , RaftClientRPC m s
+      )
    => NodeConfig
    -> (TWLog -> m ())
    -> RaftT s v m ()
-handleEventLoop nodeConfig logWriter =
+handleEventLoop nodeConfig logWriter = do
     handleEventLoop' =<< lift loadPersistentState
   where
     handleEventLoop' :: PersistentState v -> RaftT s v m ()
     handleEventLoop' persistentState = do
-      event <- lift . readChan =<< asks serverEventChan
+      event <- atomically . readTChan =<< asks serverEventChan
       case event of
         ClientReadRequest (ClientReadReq cid) -> do
           sm <- gets serverStateMachine
           lift $ sendClientRPC cid (ClientReadRes sm)
         _ -> do
+          raftNodeState <- gets serverNodeState
           let (resRaftNodeState, resPersistentState, transitionW) =
-                Raft.Handle.handleEvent nodeConfig initRaftNodeState persistentState event
+                Raft.Handle.handleEvent nodeConfig raftNodeState persistentState event
           lift $ savePersistentState resPersistentState
           updateRaftNodeState resRaftNodeState
           handleActions $ twActions transitionW
@@ -203,34 +220,25 @@ handleLogs f logs = lift $ mapM_ f logs
 -- | Producer for rpc message events
 rpcHandler
   :: (Show v, MonadConc m, RaftRecvRPC m v)
-  => Chan m (Event v)
+  => TChan (STM m) (Event v)
   -> m ()
 rpcHandler eventChan =
   forever $
     receiveRPC >>= \rpcMsg ->
-      writeChan eventChan (Message rpcMsg)
+      atomically $ writeTChan eventChan (Message rpcMsg)
 
 -- | Producer for the election timeout event
-electionTimeoutTimer :: MonadConc m => Timer m -> Chan m (Event v)
+electionTimeoutTimer :: MonadConc m => Timer m -> TChan (STM m) (Event v)
  -> m ()
 electionTimeoutTimer timer eventChan =
   forever $ do
     startTimer timer >> waitTimer timer
-    writeChan eventChan (Timeout ElectionTimeout)
+    atomically $ writeTChan eventChan (Timeout ElectionTimeout)
 
 
 -- | Producer for the heartbeat timeout event
-heartbeatTimeoutTimer :: MonadConc m => Timer m -> Chan m (Event v) -> m ()
+heartbeatTimeoutTimer :: MonadConc m => Timer m -> TChan (STM m) (Event v) -> m ()
 heartbeatTimeoutTimer timer eventChan =
   forever $ do
     startTimer timer >> waitTimer timer
-    writeChan eventChan (Timeout HeartbeatTimeout)
-
-natsToInteger :: (Natural, Natural) -> (Integer, Integer)
-natsToInteger (t1, t2) = (fromIntegral t1, fromIntegral t2)
-
-rndTimeout :: (Natural, Natural) -> Natural
-rndTimeout t = fromIntegral $ fst $ randomR (natsToInteger t) initialStdGen
-
-initialStdGen :: StdGen
-initialStdGen = mkStdGen 0
+    atomically $ writeTChan eventChan (Timeout HeartbeatTimeout)

@@ -17,4 +17,3 @@ newtype ClientReadRes s
 newtype ClientWriteRes
   = ClientWriteRes Index
   deriving (Show)
-

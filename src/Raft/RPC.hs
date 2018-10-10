@@ -1,4 +1,5 @@
-
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
@@ -6,20 +7,22 @@ module Raft.RPC where
 
 import Protolude
 
+import Data.Serialize
+
 import Raft.Log
 import Raft.Types
 
 data Message v = RPC
   { sender :: NodeId
   , rpc :: RPC v
-  } deriving (Show)
+  } deriving (Show, Generic, Serialize)
 
 data RPC v
   = AppendEntriesRPC (AppendEntries v)
   | AppendEntriesResponseRPC AppendEntriesResponse
   | RequestVoteRPC RequestVote
   | RequestVoteResponseRPC RequestVoteResponse
-  deriving (Show)
+  deriving (Show, Generic, Serialize)
 
 class RPCType a v where
   toRPC :: a -> RPC v
@@ -56,14 +59,14 @@ data AppendEntries v = AppendEntries
     -- ^ log entries to store (empty for heartbeat)
   , aeLeaderCommit :: Index
     -- ^ leader's commit index
-  } deriving (Show)
+  } deriving (Show, Generic, Serialize)
 
 data AppendEntriesResponse = AppendEntriesResponse
   { aerTerm :: Term
     -- ^ current term for leader to update itself
   , aerSuccess :: Bool
     -- ^ true if follower contained entry matching aePrevLogIndex and aePrevLogTerm
-  } deriving (Show)
+  } deriving (Show, Generic, Serialize)
 
 data RequestVote = RequestVote
   { rvTerm :: Term
@@ -74,11 +77,11 @@ data RequestVote = RequestVote
     -- ^ index of candidate's last log entry
   , rvLastLogTerm :: Term
     -- ^ term of candidate's last log entry
-  } deriving (Show)
+  } deriving (Show, Generic, Serialize)
 
 data RequestVoteResponse = RequestVoteResponse
   { rvrTerm :: Term
     -- ^ current term for candidate to update itself
   , rvrVoteGranted :: Bool
     -- ^ true means candidate recieved vote
-  } deriving (Show)
+  } deriving (Show, Generic, Serialize)

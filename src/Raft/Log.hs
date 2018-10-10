@@ -1,9 +1,11 @@
-
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveAnyClass #-}
 
 module Raft.Log where
 
 import Protolude
 
+import Data.Serialize
 import Data.Sequence (Seq(..), (<|))
 import qualified Data.Sequence as Seq
 
@@ -18,7 +20,7 @@ data Entry v = Entry
   , entryValue :: v
     -- ^ command to update state machine
   , entryClientId :: ClientId
-  } deriving (Show)
+  } deriving (Show, Generic, Serialize)
 
 data AppendEntryError
   = UnexpectedLogIndex Index Index

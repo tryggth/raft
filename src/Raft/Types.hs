@@ -1,6 +1,6 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE RankNTypes #-}
@@ -9,6 +9,7 @@ module Raft.Types where
 
 import Protolude
 
+import Data.Serialize
 import Data.Sequence (Seq(Empty, (:<|)), (<|))
 import qualified Data.Sequence as Seq
 import Numeric.Natural (Natural)
@@ -21,17 +22,17 @@ type NodeId = ByteString
 type NodeIds = Set NodeId
 
 newtype ClientId = ClientId NodeId
-  deriving (Show, Eq, Ord)
+  deriving (Show, Eq, Ord, Generic, Serialize)
 
 newtype LeaderId = LeaderId { unLeaderId :: NodeId }
-  deriving (Show, Eq)
+  deriving (Show, Eq, Generic, Serialize)
 
 --------------------------------------------------------------------------------
 -- Term
 --------------------------------------------------------------------------------
 
 newtype Term = Term Natural
-  deriving (Show, Eq, Ord, Enum)
+  deriving (Show, Eq, Ord, Enum, Generic, Serialize)
 
 term0 :: Term
 term0 = Term 0
@@ -44,7 +45,7 @@ incrTerm = succ
 --------------------------------------------------------------------------------
 
 newtype Index = Index Natural
-  deriving (Show, Eq, Ord, Enum, Num, Integral, Real)
+  deriving (Show, Eq, Ord, Enum, Num, Integral, Real, Generic, Serialize)
 
 index0 :: Index
 index0 = Index 0

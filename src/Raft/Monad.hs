@@ -28,8 +28,8 @@ import Raft.Types
 
 data TWLog = TWLog
   { twNodeId :: NodeId
-  , twMsg :: Text
   , twNodeState :: Maybe Text
+  , twMsg :: Text
   } deriving Show
 
 type TWLogs = [TWLog]
@@ -48,12 +48,14 @@ instance Monoid (TransitionWriter v) where
 tellLog' :: Maybe (NodeState a) -> Text -> TransitionM v ()
 tellLog' nsM s = do
   nId <- asks configNodeId
-  tell (TransitionWriter [] [TWLog nId s (mode <$> nsM)])
+  tell (mempty { twLogs = [TWLog nId (mode <$> nsM) s] })
   where
-    mode ns = case ns of
+    mode :: NodeState a -> Text
+    mode ns =
+      case ns of
         NodeFollowerState _ -> "Follower"
         NodeCandidateState _ -> "Candidate"
-        _ -> "Leader"
+        NodeLeaderState _ -> "Leader"
 
 
 tellLogWithState :: NodeState a -> Text -> TransitionM v ()
