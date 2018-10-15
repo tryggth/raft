@@ -29,12 +29,17 @@ import qualified Data.Set as Set
 import qualified Data.Serialize as S
 import qualified Data.Word8 as W8
 import Network.Simple.TCP
+import qualified Network.Socket as N
+import qualified Network.Socket.ByteString as NSB
 import Numeric.Natural
 
 import Raft
 import Raft.Config
 import Raft.Persistent
 import Raft.Types
+import Raft.Event
+import Raft.RPC
+import Raft.Client
 
 --------------------------------------------------------------------------------
 -- State Machine & Commands
@@ -67,6 +72,8 @@ data NodeEnv m = NodeEnv
   , nodeEnvPeers :: NodeIds
   , nodeEnvNodeId :: NodeId
   , nodeEnvSocket :: Socket
+  , nodeEnvSocketPeers :: TVar (STM m) (Map NodeId Socket)
+  , nodeEnvMsgQueue :: TChan (STM m) (Message StoreCmd)
   }
 
 deriving instance MonadThrow m => MonadThrow (NodeEnvT m)
@@ -89,28 +96,47 @@ instance MonadConc m => RaftPersist (NodeEnvT m) StoreCmd where
 instance MonadIO m => RaftClientRPC (NodeEnvT m) Store where
   sendClientRPC (ClientId cid) msg = undefined
 
-instance MonadIO m => RaftSendRPC (NodeEnvT m) StoreCmd where
-  sendRPC nid msg =
-      liftIO $ handle handleFailure $
-        connect host port $ \(sock,_) ->
-          send sock (S.encode msg)
+instance (MonadIO m, MonadConc m) => RaftSendRPC (NodeEnvT m) StoreCmd where
+  sendRPC nid msg = do
+    tPState <- asks nodeEnvPState
+    pState <- atomically $ readTVar tPState
+    liftIO $ print pState
+    tNodeSocketPeers <- asks nodeEnvSocketPeers
+    nodeSocketPeers <- atomically $ readTVar tNodeSocketPeers
+    sockM <- case Map.lookup nid nodeSocketPeers of
+      Nothing -> handle (handleFailure tNodeSocketPeers [nid] Nothing) $ liftIO $ do
+        (sock, _) <- connectSock host port
+        send sock (S.encode msg)
+        pure $ Just sock
+      Just sock -> handle (handleFailure tNodeSocketPeers [nid] (Just sock)) $ liftIO $ do
+        send sock (S.encode msg)
+        pure $ Just sock
+    liftIO $ print $ show sockM ++ " " ++ (show nid)
+    atomically $ case sockM of
+      Nothing -> writeTVar tNodeSocketPeers (Map.delete nid nodeSocketPeers)
+      Just sock -> writeTVar tNodeSocketPeers (Map.insert nid sock nodeSocketPeers)
+
     where
-      (host,port) = nidToHostPort nid
+      (host, port) = nidToHostPort nid
 
-      handleFailure :: SomeException -> IO ()
-      handleFailure e = putStrLn $ "Failed to send RPC: " ++ show e
+handleFailure :: (MonadIO m, MonadConc m) => TVar (STM m) (Map NodeId Socket) -> [NodeId] -> Maybe Socket -> SomeException -> m (Maybe Socket)
+handleFailure tNodeSocketPeers nids sockM e = case sockM of
+  Nothing -> pure Nothing
+  Just sock -> do
+    liftIO $ putStrLn $ "Failed to send RPC: " ++ show e
+    nodeSocketPeers <- atomically $ readTVar tNodeSocketPeers
+    liftIO $ closeSock sock
+    atomically $ mapM_ (\nid -> writeTVar tNodeSocketPeers (Map.delete nid nodeSocketPeers)) nids
+    pure Nothing
 
 
-instance MonadIO m => RaftRecvRPC (NodeEnvT m) StoreCmd where
+instance (MonadIO m, MonadConc m) => RaftRecvRPC (NodeEnvT m) StoreCmd where
   receiveRPC = do
-    nodeSock <- asks nodeEnvSocket
-    liftIO $
-      accept nodeSock $ \(sock,sockAddr) -> do
-        eMsg <- fmap S.decode <$> recv sock 4096
-        case eMsg of
-          Nothing -> panic ("Socket closed on " <> show sockAddr)
-          Just (Left err) -> panic ("Failed to decode msg: " <> toS err)
-          Just (Right msg) -> pure msg
+    msgQueue <- asks nodeEnvMsgQueue
+    msg <- atomically $ readTChan msgQueue
+    liftIO $ print $ "Msg: " ++ show msg
+    pure msg
+
 
 --------------------------------------------------------------------------------
 
@@ -122,7 +148,7 @@ nidToHostPort bs =
 
 main :: IO ()
 main = do
-    (nid:nids) <- map toS <$> getArgs
+    (nid:nids) <- (toS <$>) <$> getArgs
     let (host, port) = nidToHostPort (toS nid)
     let peers = Set.fromList nids
     let nodeConfig = NodeConfig
@@ -132,9 +158,25 @@ main = do
           , configHeartbeatTimeout = 200000
           }
     nodeEnv <- initNodeEnv host port peers
-    runNodeEnvT nodeEnv $
+    runNodeEnvT nodeEnv $ do
+      nodeSock <- asks nodeEnvSocket
+      msgQueue <- asks nodeEnvMsgQueue
+      tNodeSocketPeers <- asks nodeEnvSocketPeers
+      nodeSocketPeers <- atomically $ readTVar tNodeSocketPeers
+      fork $ void $ acceptFork nodeSock $ \(sock', sockAddr') ->
+        forever $ do
+          --handle (handleFailure tNodeSocketPeers (Map.keys nodeSocketPeers) (Just sock')) $ do
+            eMsgE <- S.decode <$> NSB.recv sock' 4096
+            case eMsgE of
+              Left err -> panic $ toS err
+              Right msg ->
+                atomically $ writeTChan msgQueue msg
+            pure $ Just sock'
+          --atomically $ case sockM of
+            --Nothing -> writeTVar tNodeSocketPeers mempty
+            --Just _ -> pure ()
+
       runRaftNode nodeConfig (mempty :: Store) print
-    pure ()
   where
     newSock host port = do
       (sock, _) <- bindSock (Host host) port
@@ -144,12 +186,19 @@ main = do
     initNodeEnv :: HostName -> ServiceName -> NodeIds -> IO (NodeEnv IO)
     initNodeEnv host port nids = do
       nodeSocket <- newSock host port
+      socketPeersTVar <- atomically (newTVar mempty)
       storeTVar <- atomically (newTVar mempty)
       pstateTVar <- atomically (newTVar initPersistentState)
+      msgQueue <- atomically newTChan
       pure NodeEnv
         { nodeEnvStore = storeTVar
         , nodeEnvPState = pstateTVar
         , nodeEnvPeers = nids
         , nodeEnvNodeId = toS host <> ":" <> toS port
         , nodeEnvSocket = nodeSocket
+        , nodeEnvSocketPeers = socketPeersTVar
+        , nodeEnvMsgQueue = msgQueue
         }
+
+
+

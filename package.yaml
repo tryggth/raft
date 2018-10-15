@@ -49,6 +49,7 @@ executables:
     - -with-rtsopts=-N
     dependencies:
     - raft
+    - network
     - network-simple
     - bytestring
     - stm
@@ -63,7 +64,6 @@ tests:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - base
     - tasty
     - tasty-discover
     - tasty-hunit
