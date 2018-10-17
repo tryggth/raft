@@ -147,7 +147,7 @@ handleEvent' raftHandler@RaftHandler{..} nodeConfig initNodeState persistentStat
       case event of
         Message msg -> handleMessage msg
         ClientWriteRequest crq -> do
-          tellLogWithState initNodeState (show crq)
+          --tellLogWithState initNodeState (show crq)
           handleClientRequest initNodeState crq
         Timeout tout -> do
           tellLogWithState initNodeState (show tout)
