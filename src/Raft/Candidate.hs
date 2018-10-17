@@ -54,9 +54,10 @@ handleAppendEntriesResponse (NodeCandidateState candidateState) _sender _appendE
   pure $ candidateResultState Noop candidateState
 
 handleRequestVote :: RPCHandler 'Candidate RequestVote v
-handleRequestVote (NodeCandidateState candidateState@CandidateState{..}) sender requestVote@RequestVote{..} = do
+handleRequestVote ns@(NodeCandidateState candidateState@CandidateState{..}) sender requestVote@RequestVote{..} = do
   currentTerm <- gets psCurrentTerm
-  if rvTerm > currentTerm
+  tellLogWithState ns (toS $ "Vote granted: " ++ show (rvTerm >= currentTerm))
+  if rvTerm >= currentTerm
     then stepDown sender rvTerm csCommitIndex csLastApplied
     else do
       send sender (RequestVoteResponse currentTerm False)
@@ -140,6 +141,10 @@ stepDown
   -> Index
   -> TransitionM a (ResultState 'Candidate v)
 stepDown sender term commitIndex lastApplied = do
+  send sender RequestVoteResponse
+      { rvrTerm = term
+      , rvrVoteGranted = True
+      }
   resetElectionTimeout
   pure $ ResultState DiscoverLeader $
     NodeFollowerState FollowerState

@@ -12,6 +12,10 @@ import Data.Serialize
 import Raft.Log
 import Raft.Types
 
+data SockMsg v = SockMsg (Message v)
+               | SockClose NodeId
+               deriving (Show, Generic, Serialize)
+
 data Message v = RPC
   { sender :: NodeId
   , rpc :: RPC v

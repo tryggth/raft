@@ -106,27 +106,46 @@ instance (MonadIO m, MonadConc m) => RaftSendRPC (NodeEnvT m) StoreCmd where
     sockM <- case Map.lookup nid nodeSocketPeers of
       Nothing -> handle (handleFailure tNodeSocketPeers [nid] Nothing) $ liftIO $ do
         (sock, _) <- connectSock host port
-        send sock (S.encode msg)
+        print $ "Nothing: Send message new sock: " ++ show msg
+        send sock (S.encode $ SockMsg msg)
         pure $ Just sock
-      Just sock -> handle (handleFailure tNodeSocketPeers [nid] (Just sock)) $ liftIO $ do
-        send sock (S.encode msg)
+      Just sock -> handle (handleFailure' tNodeSocketPeers nid (Just sock) msg) $ liftIO $ do
+        print $ show sock ++ ": Send message: " ++ show msg
+        send sock (S.encode $ SockMsg msg)
         pure $ Just sock
     liftIO $ print $ show sockM ++ " " ++ (show nid)
     atomically $ case sockM of
-      Nothing -> writeTVar tNodeSocketPeers (Map.delete nid nodeSocketPeers)
+      Nothing -> pure ()
       Just sock -> writeTVar tNodeSocketPeers (Map.insert nid sock nodeSocketPeers)
 
     where
       (host, port) = nidToHostPort nid
 
+handleFailure' :: (MonadIO m, MonadConc m) => TVar (STM m) (Map NodeId Socket) -> NodeId -> Maybe Socket -> Message StoreCmd -> SomeException -> m (Maybe Socket)
+handleFailure' tNodeSocketPeers nid sockM msg e =  case sockM of
+  Nothing -> pure Nothing
+  Just sock -> do
+    print "Handling failure '"
+    handle (handleFailure tNodeSocketPeers [nid] Nothing) $ liftIO $ do
+      (sock, _) <- connectSock host port
+      print $ "Send message new sock: " ++ show msg
+      send sock (S.encode $ SockMsg msg)
+      pure $ Just sock
+  where
+    (host, port) = nidToHostPort nid
+
+
 handleFailure :: (MonadIO m, MonadConc m) => TVar (STM m) (Map NodeId Socket) -> [NodeId] -> Maybe Socket -> SomeException -> m (Maybe Socket)
 handleFailure tNodeSocketPeers nids sockM e = case sockM of
   Nothing -> pure Nothing
   Just sock -> do
-    liftIO $ putStrLn $ "Failed to send RPC: " ++ show e
+    liftIO $ print $ "Failed to send RPC: " ++ show e
     nodeSocketPeers <- atomically $ readTVar tNodeSocketPeers
+    liftIO $ print $ "Nodes before: " ++ show nodeSocketPeers
     liftIO $ closeSock sock
     atomically $ mapM_ (\nid -> writeTVar tNodeSocketPeers (Map.delete nid nodeSocketPeers)) nids
+    nodeSocketPeers' <- atomically $ readTVar tNodeSocketPeers
+    liftIO $ print $ "Nodes after: " ++ show nodeSocketPeers'
     pure Nothing
 
 
@@ -146,6 +165,52 @@ nidToHostPort bs =
     [host,port] -> (toS host, toS port)
     _ -> panic "nidToHostPort: invalid node id"
 
+-- | Recursively accept a connection.
+-- It keeps trying to accept connections even when a node dies
+recAcceptFork
+  :: Socket
+  -> NodeId
+  -> TVar (STM IO) (Map NodeId Socket)
+  -> TChan (STM IO) (Message StoreCmd)
+  -> IO ()
+recAcceptFork nodeSock selfNid tNodeSocketPeers msgQueue =
+  void $ fork $ void $ acceptFork nodeSock $ \(sock', sockAddr') ->
+    handle (notifyBeforeCrashing nodeSock selfNid tNodeSocketPeers msgQueue) $
+      forever $ do
+        recvSock <- NSB.recv sock' 4096
+        print $ "Received sock. Before decoding: " ++ show recvSock
+        let eMsgE = S.decode recvSock
+        case eMsgE of
+          Left err -> panic $ toS err
+          Right (SockClose nid) -> do
+            nodeSocketPeers <- atomically $ readTVar tNodeSocketPeers
+            pure ()
+            --case Map.lookup nid nodeSocketPeers of
+              --Nothing -> pure ()
+              --Just sock -> do
+                --closeSock sock
+                --atomically $ writeTVar tNodeSocketPeers (Map.delete nid nodeSocketPeers)
+          Right (SockMsg msg) ->
+            atomically $ writeTChan msgQueue msg
+  where
+    notifyBeforeCrashing
+      :: Socket
+      -> NodeId
+      -> TVar (STM IO) (Map NodeId Socket)
+      -> TChan (STM IO) (Message StoreCmd)
+      -> SomeException
+      -> IO ()
+    notifyBeforeCrashing nodeSock selfNid tNodeSocketPeers msgQueue e = do
+      print "I'M CRASHING!"
+      --nodeSocketPeers <- atomically $ readTVar tNodeSocketPeers
+      --mapM_ (\sock -> do
+        --send sock (S.encode (SockClose selfNid :: SockMsg StoreCmd))
+        --pure Nothing) nodeSocketPeers
+      --threadDelay 10000000
+      recAcceptFork nodeSock selfNid tNodeSocketPeers msgQueue
+      --throw e
+
+
 main :: IO ()
 main = do
     (nid:nids) <- (toS <$>) <$> getArgs
@@ -154,28 +219,16 @@ main = do
     let nodeConfig = NodeConfig
           { configNodeId = toS nid
           , configNodeIds = peers
-          , configElectionTimeout = (1500000, 3000000)
-          , configHeartbeatTimeout = 200000
+          , configElectionTimeout = (5000000, 15000000)
+          , configHeartbeatTimeout = 1000000
           }
     nodeEnv <- initNodeEnv host port peers
     runNodeEnvT nodeEnv $ do
       nodeSock <- asks nodeEnvSocket
+      selfNid <- asks nodeEnvNodeId
       msgQueue <- asks nodeEnvMsgQueue
       tNodeSocketPeers <- asks nodeEnvSocketPeers
-      nodeSocketPeers <- atomically $ readTVar tNodeSocketPeers
-      fork $ void $ acceptFork nodeSock $ \(sock', sockAddr') ->
-        forever $ do
-          --handle (handleFailure tNodeSocketPeers (Map.keys nodeSocketPeers) (Just sock')) $ do
-            eMsgE <- S.decode <$> NSB.recv sock' 4096
-            case eMsgE of
-              Left err -> panic $ toS err
-              Right msg ->
-                atomically $ writeTChan msgQueue msg
-            pure $ Just sock'
-          --atomically $ case sockM of
-            --Nothing -> writeTVar tNodeSocketPeers mempty
-            --Just _ -> pure ()
-
+      liftIO $ recAcceptFork nodeSock selfNid tNodeSocketPeers msgQueue
       runRaftNode nodeConfig (mempty :: Store) print
   where
     newSock host port = do
