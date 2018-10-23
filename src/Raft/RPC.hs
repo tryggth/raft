@@ -12,7 +12,7 @@ import Data.Serialize
 import Raft.Log
 import Raft.Types
 
-data Message v = RPC
+data RPCMessage v = RPCMessage
   { sender :: NodeId
   , rpc :: RPC v
   } deriving (Show, Generic, Serialize)

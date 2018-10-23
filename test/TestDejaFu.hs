@@ -1,6 +1,6 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -10,14 +10,16 @@ module TestDejaFu where
 import Protolude hiding
   ( MVar, putMVar, takeMVar, newMVar, newEmptyMVar, readMVar
   , atomically, STM, Chan, readTVar, writeTVar
-  , newChan, writeChan, readChan
+  , newChan, writeTChan, readTChan
   , threadDelay, killThread
   )
 
+import System.Random
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.Sequence (Seq(..), (<|))
 import qualified Data.Sequence as Seq
+import qualified Data.Serialize as S
 import Control.Monad.Reader
 import Control.Monad.Catch
 import Control.Concurrent.Classy hiding (check)
@@ -45,30 +47,40 @@ import Raft.RPC
 import Raft.Types
 import Raft
 
-data StoreCmd = Set Text Natural | Incr Text
-  deriving (Show)
+type Var = ByteString
 
-type Store = Map Text Natural
+data StoreCmd
+  = Set Var Natural
+  | Incr Var
+  deriving (Show, Generic)
 
-initStore :: Store
-initStore = mempty
+instance S.Serialize StoreCmd
 
-instance RaftStateMachine Store StoreCmd where
+type Store = Map Var Natural
+
+instance StateMachine Store StoreCmd where
   applyCommittedLogEntry store cmd =
     case cmd of
       Set x n -> Map.insert x n store
       Incr x -> Map.adjust succ x store
 
-type NodeChanMap m = Map NodeId (Chan m (Message StoreCmd))
+initStore :: Store
+initStore = mempty
 
-type ClientChanMap m = Map ClientId (Chan m Store)
+-----------------------
+
+type NodeChanMap m = Map NodeId (TChan (STM m) (RPCMessage StoreCmd))
+
+type ClientResponsesChan m = TChan (STM m) (ClientResponse Store)
+type ClientRequestsChan m = TChan (STM m) (ClientRequest StoreCmd)
 
 data TestEnv m = TestEnv
   { store :: TVar (STM m) Store
   , pstate :: TVar (STM m) (PersistentState StoreCmd)
   , nodes :: NodeChanMap m
   , nid :: NodeId
-  , clients :: ClientChanMap m
+  , clientResps :: ClientResponsesChan m
+  , clientReqs :: ClientRequestsChan m
   }
 
 newtype TestEnvT m a = TestEnvT { unTestEnvT :: ReaderT (TestEnv m) m a }
@@ -95,7 +107,7 @@ instance MonadConc m => RaftSendRPC (TestEnvT m) StoreCmd where
     nodeChanMap <- asks nodes
     case Map.lookup nid nodeChanMap of
       Nothing -> panic $ toS $ "SendRPC: " ++ show nid ++ " .Wtf bro"
-      Just c -> lift $ writeChan c msg
+      Just c -> atomically $ writeTChan c msg
 
 instance MonadConc m => RaftRecvRPC (TestEnvT m) StoreCmd where
   receiveRPC = do
@@ -103,41 +115,43 @@ instance MonadConc m => RaftRecvRPC (TestEnvT m) StoreCmd where
     nodeChanMap <- asks nodes
     case Map.lookup myNodeId nodeChanMap of
       Nothing -> panic $ toS $ "RecvRPC: " ++ show myNodeId ++ " .Wtf bro"
-      Just c -> lift $ readChan c
+      Just c -> atomically $ readTChan c
 
-instance MonadConc m => RaftClientRPC (TestEnvT m) Store where
-  sendClientRPC cid (ClientReadRes sm) = do
-    clientChanMap <- asks clients
-    case Map.lookup cid clientChanMap of
-      Nothing -> panic $ toS $ "SendClientRPC: " ++ show cid ++ " . Wtf bro"
-      Just c -> lift $ writeChan c sm
+instance MonadConc m => RaftSendClient (TestEnvT m) Store where
+  sendClient cid resp = do
+    clientRespsChan <- asks clientResps
+    lift $ atomically $ writeTChan clientRespsChan resp
+
+instance MonadConc m => RaftRecvClient (TestEnvT m) StoreCmd where
+  receiveClient = atomically . readTChan =<< asks clientReqs
 
 mkNodeTestEnv :: MonadConc m => NodeId -> NodeChanMap m -> m (TestEnv m)
-mkNodeTestEnv nid chanMap = do
+mkNodeTestEnv nid nodesChan = do
   newStore <- atomically $ newTVar initStore
+  clientReqsChan <- atomically newTChan
+  clientRespsChan <- atomically newTChan
   newPersistentState <- atomically $ newTVar initPersistentState
   pure TestEnv
     { store = newStore
     , pstate = newPersistentState
-    , nodes = chanMap
+    , nodes = nodesChan
     , nid = nid
+    , clientResps = clientRespsChan
+    , clientReqs = clientReqsChan
     }
 
---test_auto :: TestTree
---test_auto = testAuto $ do
+--test_dejafu :: TestTree
+--test_dejafu = testAuto $ do
 
-testauto :: IO [(Either Failure (), Trace)]
-testauto =
-  runSCT defaultWay defaultMemType $ do
+  --electionTimerSeed <- liftIO randomIO
+  --nodeChans <- replicateM 2 (atomically newTChan)
+  --let nodeChanMap = Map.fromList $ zip [node0, node1] nodeChans
 
-  nodeChans <- replicateM 2 newChan
-  let nodeChanMap = Map.fromList $ zip [node0, node1] nodeChans
+  --testEnv0 <- mkNodeTestEnv node0 nodeChanMap
+  --testEnv1 <- mkNodeTestEnv node1 nodeChanMap
+  --let testConfig0' = testConfig0 { configNodeIds = Set.fromList [node0, node1] }
+  --let testConfig1' = testConfig1 { configNodeIds = Set.fromList [node0, node1] }
 
-  testEnv0 <- mkNodeTestEnv node0 nodeChanMap
-  testEnv1 <- mkNodeTestEnv node1 nodeChanMap
-  let testConfig0' = testConfig0 { configNodeIds = Set.fromList [node0, node1] }
-  let testConfig1' = testConfig1 { configNodeIds = Set.fromList [node0, node1] }
-
-  fork $ runTestEnvT testEnv0 (runRaftNode testConfig0' initStore (const $ pure ()))
-  runTestEnvT testEnv1 (runRaftNode testConfig1' initStore (const $ pure ()))
+  --fork $ runTestEnvT testEnv0 (runRaftNode testConfig0' electionTimerSeed initStore (const $ pure ()))
+  --fork $ runTestEnvT testEnv1 (runRaftNode testConfig1' electionTimerSeed initStore (const $ pure ()))
 

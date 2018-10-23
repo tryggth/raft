@@ -4,7 +4,8 @@ module Control.Concurrent.STM.Timer (
   waitTimer,
   startTimer,
   resetTimer,
-  newTimer
+  newTimer,
+  newTimerRange,
 ) where
 
 import Protolude hiding (STM, killThread, ThreadId, threadDelay, myThreadId, atomically)
@@ -35,7 +36,7 @@ startTimer timer@(Timer _ lock _ _) = do
     Just () -> spawnTimer timer
 
 resetTimer :: MonadConc m => Timer m -> m ()
-resetTimer timer@(Timer tid _ _ _) = do
+resetTimer timer@(Timer tid lock _ _) = do
   -- Kill the old timer
   mOldTid <- atomically $ tryTakeTMVar tid
   case mOldTid of
@@ -62,10 +63,14 @@ spawnTimer (Timer tid lock trange@(tmin, tmax) tgen) = do
       _ <- tryTakeTMVar tid
       putTMVar lock ()
 
-newTimer :: MonadConc m => (Natural, Natural) -> m (Timer m)
-newTimer timeoutRange = do
+newTimer :: MonadConc m => Natural -> m (Timer m)
+newTimer timeout = newTimerRange 0 (timeout, timeout)
+
+-- | Create a new timer with the given random seed and range of timer timeouts.
+newTimerRange :: MonadConc m => Int -> (Natural, Natural) -> m (Timer m)
+newTimerRange seed timeoutRange = do
   (timerThread, timerLock, timerGen) <-
-    atomically $ (,,) <$> newEmptyTMVar <*> newTMVar () <*> newTVar (mkStdGen 0)
+    atomically $ (,,) <$> newEmptyTMVar <*> newTMVar () <*> newTVar (mkStdGen seed)
   pure $ Timer timerThread timerLock timeoutRange timerGen
 
 --------------------------------------------------------------------------------

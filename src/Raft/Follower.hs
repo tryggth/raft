@@ -40,9 +40,9 @@ import Raft.Types
 --
 -- Note: see 'PersistentState' datatype for discussion about not keeping the
 -- entire log in memory.
-handleAppendEntries :: forall v. RPCHandler 'Follower (AppendEntries v) v
+handleAppendEntries :: forall v sm. Show v => RPCHandler 'Follower sm (AppendEntries v) v
 handleAppendEntries ns@(NodeFollowerState fs) sender AppendEntries{..} = do
-      PersistentState{..} <- get
+      PersistentState{..} <- getPersistentState
       (success, newFollowerState) <-
         if aeTerm < psCurrentTerm
           -- 1. Reply false if term < currentTerm
@@ -81,9 +81,9 @@ handleAppendEntries ns@(NodeFollowerState fs) sender AppendEntries{..} = do
       resetElectionTimeout
       pure (followerResultState Noop newFollowerState)
     where
-      removeLogsFromIndex :: Index -> TransitionM v ()
+      removeLogsFromIndex :: Index -> TransitionM sm v ()
       removeLogsFromIndex idx =
-        modify $ \pstate ->
+        modifyPersistentState $ \pstate ->
           let log = psLog pstate
            in pstate { psLog = dropLogEntriesUntil log idx }
 
@@ -100,20 +100,21 @@ handleAppendEntries ns@(NodeFollowerState fs) sender AppendEntries{..} = do
       updateLeader followerState = followerState { fsCurrentLeader = CurrentLeader (LeaderId sender) }
 
 -- | Followers should not respond to 'AppendEntriesResponse' messages.
-handleAppendEntriesResponse :: RPCHandler 'Follower AppendEntriesResponse v
+handleAppendEntriesResponse :: RPCHandler 'Follower sm AppendEntriesResponse v
 handleAppendEntriesResponse (NodeFollowerState fs) _ _ =
   pure (followerResultState Noop fs)
 
-handleRequestVote :: RPCHandler 'Follower RequestVote v
+handleRequestVote :: RPCHandler 'Follower sm RequestVote v
 handleRequestVote ns@(NodeFollowerState fs) sender RequestVote{..} = do
-    PersistentState{..} <- get
+    PersistentState{..} <- getPersistentState
     let voteGranted = giveVote psCurrentTerm psVotedFor psLog
     tellLogWithState ns (toS $ "Vote granted: " ++ show voteGranted)
     send sender RequestVoteResponse
       { rvrTerm = psCurrentTerm
       , rvrVoteGranted = voteGranted
       }
-    modify $ \ps -> ps { psVotedFor = Just sender }
+    modifyPersistentState $ \ps ->
+      ps { psVotedFor = Just sender }
     pure $ followerResultState Noop fs
   where
     giveVote term mVotedFor log =
@@ -134,12 +135,12 @@ handleRequestVote ns@(NodeFollowerState fs) sender RequestVote{..} = do
           term < rvLastLogTerm && idx < rvLastLogIndex
 
 -- | Followers should not respond to 'RequestVoteResponse' messages.
-handleRequestVoteResponse :: RPCHandler 'Follower RequestVoteResponse v
+handleRequestVoteResponse :: RPCHandler 'Follower sm RequestVoteResponse v
 handleRequestVoteResponse (NodeFollowerState fs) _ _  =
   pure (followerResultState Noop fs)
 
 -- | Follower converts to Candidate if handling ElectionTimeout
-handleTimeout :: TimeoutHandler 'Follower v
+handleTimeout :: TimeoutHandler 'Follower sm v
 handleTimeout ns@(NodeFollowerState fs) timeout =
   case timeout of
     ElectionTimeout -> do
@@ -151,8 +152,7 @@ handleTimeout ns@(NodeFollowerState fs) timeout =
 
 -- | When a client handles a client request, it redirects the client to the
 -- current leader by responding with the current leader id, if it knows of one.
-handleClientRequest :: ClientReqHandler 'Follower v
-handleClientRequest (NodeFollowerState fs) (ClientWriteReq clientId _)= do
+handleClientRequest :: ClientReqHandler 'Follower sm v
+handleClientRequest (NodeFollowerState fs) (ClientRequest clientId _)= do
   redirectClientToLeader clientId (fsCurrentLeader fs)
   pure (followerResultState Noop fs)
-

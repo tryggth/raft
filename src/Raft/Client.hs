@@ -1,19 +1,51 @@
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE StandaloneDeriving #-}
+
 module Raft.Client where
 
 import Protolude
+
+import qualified Data.Serialize as S
+
+import Raft.NodeState
 import Raft.Types
 
-data ClientWriteReq v
-  = ClientWriteReq ClientId v
-  deriving (Show)
+data ClientRequest v
+  = ClientRequest ClientId (ClientReq v)
+  deriving (Show, Generic)
 
-newtype ClientReadReq = ClientReadReq ClientId
-  deriving (Show)
+instance S.Serialize v => S.Serialize (ClientRequest v)
 
-newtype ClientReadRes s
-  = ClientReadRes s
-  deriving (Show)
+data ClientReq v
+  = ClientReadReq
+  | ClientWriteReq v
+  deriving (Show, Generic)
 
-newtype ClientWriteRes
-  = ClientWriteRes Index
-  deriving (Show)
+instance S.Serialize v => S.Serialize (ClientReq v)
+
+data ClientResponse s
+  = ClientReadResponse (ClientReadResp s)
+  | ClientWriteResponse ClientWriteResp
+  | ClientRedirectResponse ClientRedirResp
+  deriving (Show, Generic)
+
+instance S.Serialize s => S.Serialize (ClientResponse s)
+
+newtype ClientReadResp s
+  = ClientReadResp s
+  deriving (Show, Generic)
+
+instance S.Serialize s => S.Serialize (ClientReadResp s)
+
+data ClientWriteResp
+  = ClientWriteResp Index
+  deriving (Show, Generic)
+
+instance S.Serialize ClientWriteResp
+
+data ClientRedirResp
+  = ClientRedirResp CurrentLeader
+  deriving (Show, Generic)
+
+instance S.Serialize ClientRedirResp
+

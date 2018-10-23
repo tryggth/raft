@@ -30,6 +30,10 @@ dependencies:
 - exceptions
 - cereal
 - random
+- repline
+- haskeline
+- parsec
+- attoparsec
 
 default-extensions:
   NoImplicitPrelude

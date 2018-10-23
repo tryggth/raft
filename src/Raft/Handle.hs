@@ -15,7 +15,6 @@ import Control.Monad.Writer.Strict
 
 import Data.Type.Bool
 import Data.Monoid
-import qualified Debug.Trace as DT
 
 import qualified Raft.Follower as Follower
 import qualified Raft.Candidate as Candidate
@@ -23,6 +22,7 @@ import qualified Raft.Leader as Leader
 
 import Raft.Action
 import Raft.Config
+import Raft.Client
 import Raft.Event
 import Raft.Monad
 import Raft.NodeState
@@ -32,49 +32,50 @@ import Raft.Types
 
 -- | Main entry point for handling events
 handleEvent
-  :: forall v. Show v
+  :: forall s sm v.
+     (StateMachine sm v, Show v)
   => NodeConfig
-  -> RaftNodeState v
-  -> PersistentState v
+  -> RaftNodeState s
+  -> TransitionState sm v
   -> Event v
-  -> (RaftNodeState v, PersistentState v, TransitionWriter v)
-handleEvent nodeConfig raftNodeState@(RaftNodeState initNodeState) persistentState event =
+  -> (RaftNodeState s, TransitionState sm v, TransitionWriter sm v)
+handleEvent nodeConfig raftNodeState@(RaftNodeState initNodeState) transitionState event =
     -- Rules for all servers:
     case handleNewerRPCTerm of
-      (RaftNodeState resNodeState, persistentState', transitionW) ->
-        case handleEvent' (raftHandler resNodeState) nodeConfig resNodeState persistentState' event of
-          (ResultState _ resultState, persistentState'', transitionW') ->
-            (RaftNodeState resultState, persistentState'', transitionW <> transitionW')
+      (RaftNodeState resNodeState, transitionState', transitionW) ->
+        case handleEvent' (raftHandler resNodeState) nodeConfig resNodeState transitionState' event of
+          (ResultState _ resultState, transitionState'', transitionW') ->
+            (RaftNodeState resultState, transitionState'', transitionW <> transitionW')
   where
-    raftHandler :: forall s. NodeState s -> RaftHandler s v
+    raftHandler :: forall ns sm. NodeState ns -> RaftHandler ns sm v
     raftHandler nodeState =
       case nodeState of
         NodeFollowerState _ -> followerRaftHandler
         NodeCandidateState _ -> candidateRaftHandler
         NodeLeaderState _ -> leaderRaftHandler
 
-    handleNewerRPCTerm :: (RaftNodeState v, PersistentState v, TransitionWriter v)
+    handleNewerRPCTerm :: (RaftNodeState s, TransitionState sm v, TransitionWriter sm v)
     handleNewerRPCTerm =
       case event of
-        Message (RPC _ rpc) ->
-          runTransitionM nodeConfig persistentState $ do
+        MessageEvent (RPCMessageEvent (RPCMessage _ rpc)) ->
+          runTransitionM nodeConfig transitionState $ do
             -- If RPC request or response contains term T > currentTerm: set
             -- currentTerm = T, convert to follower
-            currentTerm <- gets psCurrentTerm
+            currentTerm <- psCurrentTerm <$> getPersistentState
             if rpcTerm rpc > currentTerm
               then
                 case convertToFollower initNodeState of
                   ResultState _ nodeState -> do
-                    modify $ \pstate ->
+                    modifyPersistentState $ \pstate ->
                       pstate { psCurrentTerm = rpcTerm rpc
                              , psVotedFor = Nothing
                              }
                     resetElectionTimeout
                     pure (RaftNodeState nodeState)
               else pure raftNodeState
-        _ -> (raftNodeState, persistentState, mempty)
+        _ -> (raftNodeState, transitionState, mempty)
 
-    convertToFollower :: NodeState s -> ResultState s v
+    convertToFollower :: forall s. NodeState s -> ResultState s v
     convertToFollower nodeState =
       case nodeState of
         NodeFollowerState _ ->
@@ -95,16 +96,16 @@ handleEvent nodeConfig raftNodeState@(RaftNodeState initNodeState) persistentSta
               }
 
 
-data RaftHandler s v = RaftHandler
-  { handleAppendEntries :: RPCHandler s (AppendEntries v) v
-  , handleAppendEntriesResponse :: RPCHandler s AppendEntriesResponse v
-  , handleRequestVote :: RPCHandler s RequestVote v
-  , handleRequestVoteResponse :: RPCHandler s RequestVoteResponse v
-  , handleTimeout :: TimeoutHandler s v
-  , handleClientRequest :: ClientReqHandler s v
+data RaftHandler ns sm v = RaftHandler
+  { handleAppendEntries :: RPCHandler ns sm (AppendEntries v) v
+  , handleAppendEntriesResponse :: RPCHandler ns sm AppendEntriesResponse v
+  , handleRequestVote :: RPCHandler ns sm RequestVote v
+  , handleRequestVoteResponse :: RPCHandler ns sm RequestVoteResponse v
+  , handleTimeout :: TimeoutHandler ns sm v
+  , handleClientRequest :: ClientReqHandler ns sm v
   }
 
-followerRaftHandler :: RaftHandler 'Follower v
+followerRaftHandler :: Show v => RaftHandler 'Follower sm v
 followerRaftHandler = RaftHandler
   { handleAppendEntries = Follower.handleAppendEntries
   , handleAppendEntriesResponse = Follower.handleAppendEntriesResponse
@@ -114,7 +115,7 @@ followerRaftHandler = RaftHandler
   , handleClientRequest = Follower.handleClientRequest
   }
 
-candidateRaftHandler :: RaftHandler 'Candidate v
+candidateRaftHandler :: Show v => RaftHandler 'Candidate sm v
 candidateRaftHandler = RaftHandler
   { handleAppendEntries = Candidate.handleAppendEntries
   , handleAppendEntriesResponse = Candidate.handleAppendEntriesResponse
@@ -124,7 +125,7 @@ candidateRaftHandler = RaftHandler
   , handleClientRequest = Candidate.handleClientRequest
   }
 
-leaderRaftHandler :: RaftHandler 'Leader v
+leaderRaftHandler :: Show v => RaftHandler 'Leader sm v
 leaderRaftHandler = RaftHandler
   { handleAppendEntries = Leader.handleAppendEntries
   , handleAppendEntriesResponse = Leader.handleAppendEntriesResponse
@@ -135,27 +136,29 @@ leaderRaftHandler = RaftHandler
   }
 
 handleEvent'
-  :: forall s v. Show v
-  => RaftHandler s v
+  :: forall ns sm v.
+     (StateMachine sm v, Show v)
+  => RaftHandler ns sm v
   -> NodeConfig
-  -> NodeState s
-  -> PersistentState v
+  -> NodeState ns
+  -> TransitionState sm v
   -> Event v
-  -> (ResultState s v, PersistentState v, TransitionWriter v)
-handleEvent' raftHandler@RaftHandler{..} nodeConfig initNodeState persistentState event =
-    runTransitionM nodeConfig persistentState $ do
+  -> (ResultState ns v, TransitionState sm v, TransitionWriter sm v)
+handleEvent' raftHandler@RaftHandler{..} nodeConfig initNodeState transitionState event =
+    runTransitionM nodeConfig transitionState $
       case event of
-        Message msg -> handleMessage msg
-        ClientWriteRequest crq -> do
-          --tellLogWithState initNodeState (show crq)
-          handleClientRequest initNodeState crq
-        Timeout tout -> do
+        MessageEvent mev ->
+          case mev of
+            RPCMessageEvent rpcMsg -> handleRPCMessage rpcMsg
+            ClientRequestEvent cr -> do
+              tellLogWithState initNodeState (show cr)
+              handleClientRequest initNodeState cr
+        TimeoutEvent tout -> do
           tellLogWithState initNodeState (show tout)
           handleTimeout initNodeState tout
-        ClientReadRequest _ -> panic "No read requests here"
   where
-    handleMessage :: Message v -> TransitionM v (ResultState s v)
-    handleMessage (RPC sender rpc) = do
+    handleRPCMessage :: RPCMessage v -> TransitionM sm v (ResultState ns v)
+    handleRPCMessage (RPCMessage sender rpc) = do
       resState@(ResultState transition newNodeState) <- case rpc of
         AppendEntriesRPC appendEntries -> do
           tellLogWithState initNodeState (show appendEntries)
@@ -179,7 +182,7 @@ handleEvent' raftHandler@RaftHandler{..} nodeConfig initNodeState persistentStat
 
       pure $ ResultState transition newestNodeState
 
-    incrLastApplied :: NodeState s' -> TransitionM v (NodeState s')
+    incrLastApplied :: NodeState ns' -> TransitionM sm v (NodeState ns')
     incrLastApplied nodeState =
       case nodeState of
         NodeFollowerState fs -> do

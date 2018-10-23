@@ -41,21 +41,21 @@ import Raft.Types
 -- Candidate
 --------------------------------------------------------------------------------
 
-handleAppendEntries :: RPCHandler 'Candidate (AppendEntries v) v
+handleAppendEntries :: RPCHandler 'Candidate sm (AppendEntries v) v
 handleAppendEntries (NodeCandidateState candidateState@CandidateState{..}) sender AppendEntries {..} = do
-  currentTerm <- gets psCurrentTerm
+  currentTerm <- psCurrentTerm <$> getPersistentState
   if currentTerm <= aeTerm
     then stepDown sender aeTerm csCommitIndex csLastApplied
     else pure $ candidateResultState Noop candidateState
 
 -- | Candidates should not respond to 'AppendEntriesResponse' messages.
-handleAppendEntriesResponse :: RPCHandler 'Candidate AppendEntriesResponse v
+handleAppendEntriesResponse :: RPCHandler 'Candidate sm AppendEntriesResponse v
 handleAppendEntriesResponse (NodeCandidateState candidateState) _sender _appendEntriesResp =
   pure $ candidateResultState Noop candidateState
 
-handleRequestVote :: RPCHandler 'Candidate RequestVote v
+handleRequestVote :: RPCHandler 'Candidate sm RequestVote v
 handleRequestVote ns@(NodeCandidateState candidateState@CandidateState{..}) sender requestVote@RequestVote{..} = do
-  currentTerm <- gets psCurrentTerm
+  currentTerm <- psCurrentTerm <$> getPersistentState
   tellLogWithState ns (toS $ "Vote granted: " ++ show (rvTerm >= currentTerm))
   if rvTerm >= currentTerm
     then stepDown sender rvTerm csCommitIndex csLastApplied
@@ -64,15 +64,11 @@ handleRequestVote ns@(NodeCandidateState candidateState@CandidateState{..}) send
       pure $ candidateResultState Noop candidateState
 
 -- | Candidates should not respond to 'RequestVoteResponse' messages.
-handleRequestVoteResponse :: forall v. RPCHandler 'Candidate RequestVoteResponse v
+handleRequestVoteResponse :: forall sm v. RPCHandler 'Candidate sm RequestVoteResponse v
 handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..}) sender requestVoteResp@RequestVoteResponse{..} = do
-  currentTerm <- gets psCurrentTerm
+  currentTerm <- psCurrentTerm <$> getPersistentState
   cNodeIds <- asks configNodeIds
-  if
-      -- | rvrTerm < currentTerm -> DT.trace ("rvrTerm: " ++ show rvrTerm ++ ",
-      --currentTerm: " ++ show currentTerm) pure $ candidateResultState Noop
-      --candidateState
-      | rvrTerm > currentTerm -> stepDown sender rvrTerm csCommitIndex csLastApplied
+  if  | rvrTerm > currentTerm -> stepDown sender rvrTerm csCommitIndex csLastApplied
       | not rvrVoteGranted -> pure $ candidateResultState Noop candidateState
       | Set.member sender csVotes -> pure $ candidateResultState Noop candidateState
       | otherwise -> do
@@ -87,13 +83,13 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
     hasMajority totalNodeIds votes =
       Set.size votes >= Set.size totalNodeIds `div` 2 + 1
 
-    becomeLeader :: Index -> Index -> TransitionM v LeaderState
+    becomeLeader :: Index -> Index -> TransitionM sm v LeaderState
     becomeLeader commitIndex lastApplied = do
       resetHeartbeatTimeout
       selfNodeId <- asks configNodeId
-      currentTerm <- gets psCurrentTerm
+      currentTerm <- psCurrentTerm <$> getPersistentState
       (logEntryIndex, logEntryTerm) <-
-        lastLogEntryIndexAndTerm <$> gets psLog
+        lastLogEntryIndexAndTerm . psLog <$> getPersistentState
       broadcast AppendEntries { aeTerm = currentTerm
                               , aeLeaderId = LeaderId selfNodeId
                               , aePrevLogIndex = logEntryIndex
@@ -114,7 +110,7 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
               -- the highest log has been seen by other nodes
               }
 
-handleTimeout :: TimeoutHandler 'Candidate v
+handleTimeout :: TimeoutHandler 'Candidate sm v
 handleTimeout (NodeCandidateState candidateState@CandidateState{..}) timeout =
   case timeout of
     HeartbeatTimeout -> pure $ candidateResultState Noop candidateState
@@ -126,11 +122,10 @@ handleTimeout (NodeCandidateState candidateState@CandidateState{..}) timeout =
 -- very reason they are candidate is because there is no leader. This is done
 -- instead of simply not responding such that the client can know that the node
 -- is live but that there is an election taking place.
-handleClientRequest :: ClientReqHandler 'Candidate v
-handleClientRequest (NodeCandidateState candidateState) (ClientWriteReq clientId _) = do
+handleClientRequest :: ClientReqHandler 'Candidate sm v
+handleClientRequest (NodeCandidateState candidateState) (ClientRequest clientId _) = do
   redirectClientToLeader clientId NoLeader
   pure (candidateResultState Noop candidateState)
-
 
 --------------------------------------------------------------------------------
 
@@ -139,7 +134,7 @@ stepDown
   -> Term
   -> Index
   -> Index
-  -> TransitionM a (ResultState 'Candidate v)
+  -> TransitionM a sm (ResultState 'Candidate v)
 stepDown sender term commitIndex lastApplied = do
   send sender RequestVoteResponse
       { rvrTerm = term

@@ -6,7 +6,7 @@ module Raft.Log where
 import Protolude
 
 import Data.Serialize
-import Data.Sequence (Seq(..), (<|))
+import Data.Sequence (Seq(..), (<|), (|>))
 import qualified Data.Sequence as Seq
 
 import Raft.Types
@@ -32,22 +32,22 @@ type Entries v = Seq (Entry v)
 newtype Log v = Log { unLog :: Entries v } deriving Show
 
 -- | Append a log entry to the log. Checks if the log is the correct index
-appendLogEntry :: Log v -> Entry v -> Either AppendEntryError (Log v)
+appendLogEntry :: Show v => Log v -> Entry v -> Either AppendEntryError (Log v)
 appendLogEntry (Log logEntries) newEntry =
     case logEntries of
       Empty
         | newEntryIndex == 0 -> Right newLog
         | otherwise -> Left (UnexpectedLogIndex newEntryIndex 0)
-      entry :<| entries
+      entries :|> entry
         | newEntryIndex == entryIndex entry + 1 -> Right newLog
         | otherwise -> Left (UnexpectedLogIndex newEntryIndex (entryIndex entry + 1))
   where
     newEntryIndex = entryIndex newEntry
-    newLog = Log (newEntry <| logEntries)
+    newLog = Log (logEntries |> newEntry)
 
 -- | Append a sequence of log entries to the log. The log entries must be in
 -- descending order with respect to the log entry indices.
-appendLogEntries :: Log v -> Seq (Entry v) -> Either AppendEntryError (Log v)
+appendLogEntries :: Show v => Log v -> Seq (Entry v) -> Either AppendEntryError (Log v)
 appendLogEntries = foldrM (flip appendLogEntry)
 
 lookupLogEntry :: Index -> Log v -> Maybe (Entry v)
@@ -59,7 +59,8 @@ lastLogEntry (Log entries) = lastEntry entries
 
 lastEntry :: Seq (Entry v) -> Maybe (Entry v)
 lastEntry Empty = Nothing
-lastEntry (e :<| _) = Just e
+--lastEntry (e :<| _) = Just e
+lastEntry (_ :|> e) = Just e
 
 -- | Get the last log entry index
 lastLogEntryIndex :: Log v -> Index
@@ -67,6 +68,12 @@ lastLogEntryIndex log =
   case lastLogEntry log of
     Nothing -> index0
     Just entry -> entryIndex entry
+
+nextLogEntryIndex :: Log v -> Index
+nextLogEntryIndex log =
+  case lastLogEntry log of
+    Nothing -> index0
+    Just entry -> entryIndex entry + 1
 
 lastLogEntryClientId :: Log v -> Maybe ClientId
 lastLogEntryClientId log =

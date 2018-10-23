@@ -2,10 +2,13 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE DeriveGeneric #-}
 
 module Raft.NodeState where
 
 import Protolude
+
+import qualified Data.Serialize as S
 
 import Raft.Types
 
@@ -87,7 +90,9 @@ deriving instance Show (NodeState v)
 data CurrentLeader
   = CurrentLeader LeaderId
   | NoLeader
-  deriving (Show, Eq)
+  deriving (Show, Eq, Generic)
+
+instance S.Serialize CurrentLeader
 
 data FollowerState = FollowerState
   { fsCurrentLeader :: CurrentLeader

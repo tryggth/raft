@@ -1,7 +1,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE GADTs #-}
 
 module Raft.Monad where
@@ -23,6 +23,15 @@ import Raft.RPC
 import Raft.Types
 
 --------------------------------------------------------------------------------
+-- State Machine
+--------------------------------------------------------------------------------
+
+--- | The underlying state machine. Functional dependency permitting only
+--a single state machine command to be defined to update the state machine.
+class StateMachine sm v | sm -> v where
+  applyCommittedLogEntry :: sm -> v -> sm
+
+--------------------------------------------------------------------------------
 -- Raft Monad
 --------------------------------------------------------------------------------
 
@@ -34,18 +43,18 @@ data TWLog = TWLog
 
 type TWLogs = [TWLog]
 
-data TransitionWriter v = TransitionWriter
-  { twActions :: [Action v]
+data TransitionWriter sm v = TransitionWriter
+  { twActions :: [Action sm v]
   , twLogs :: TWLogs
   } deriving (Show)
 
-instance Semigroup (TransitionWriter v) where
+instance Semigroup (TransitionWriter sm v) where
   t1 <> t2 = TransitionWriter (twActions t1 <> twActions t2) (twLogs t1 <> twLogs t2)
 
-instance Monoid (TransitionWriter v) where
+instance Monoid (TransitionWriter sm v) where
   mempty = TransitionWriter [] []
 
-tellLog' :: Maybe (NodeState a) -> Text -> TransitionM v ()
+tellLog' :: Maybe (NodeState a) -> Text -> TransitionM sm v ()
 tellLog' nsM s = do
   nId <- asks configNodeId
   tell (mempty { twLogs = [TWLog nId (mode <$> nsM) s] })
@@ -57,101 +66,134 @@ tellLog' nsM s = do
         NodeCandidateState _ -> "Candidate"
         NodeLeaderState _ -> "Leader"
 
-
-tellLogWithState :: NodeState a -> Text -> TransitionM v ()
+tellLogWithState :: NodeState a -> Text -> TransitionM sm v ()
 tellLogWithState ns = tellLog' (Just ns)
 
-tellLog :: Text -> TransitionM v ()
+tellLog :: Text -> TransitionM sm v ()
 tellLog = tellLog' Nothing
 
-tellAction :: Action v -> TransitionM v ()
+tellAction :: Action sm v -> TransitionM sm v ()
 tellAction a = tell (TransitionWriter [a] [])
 
-tellActions :: [Action v] -> TransitionM v ()
+tellActions :: [Action sm v] -> TransitionM sm v ()
 tellActions as = tell (TransitionWriter as [])
 
-newtype TransitionM v a = TransitionM
-  { unTransitionM :: RWS NodeConfig (TransitionWriter v) (PersistentState v) a
-  } deriving (Functor, Applicative, Monad, MonadWriter (TransitionWriter v), MonadReader NodeConfig
-             , MonadState (PersistentState v))
+data TransitionState s v = TransitionState
+  { transPersistentState :: PersistentState v
+  , transStateMachine :: s
+  }
+
+getPersistentState :: TransitionM sm v (PersistentState v)
+getPersistentState = gets transPersistentState
+
+getStateMachine :: TransitionM sm v sm
+getStateMachine = gets transStateMachine
+
+modifyPersistentState :: (PersistentState v -> PersistentState v) -> TransitionM sm v ()
+modifyPersistentState f =
+  modify $ \transState ->
+    transState { transPersistentState = f (transPersistentState transState) }
+
+modifyStateMachine :: (sm -> sm) -> TransitionM sm v ()
+modifyStateMachine f =
+  modify $ \transState ->
+    transState { transStateMachine = f (transStateMachine transState) }
+
+newtype TransitionM sm v a = TransitionM
+  { unTransitionM :: RWS NodeConfig (TransitionWriter sm v) (TransitionState sm v) a
+  } deriving (Functor, Applicative, Monad, MonadWriter (TransitionWriter sm v), MonadReader NodeConfig
+             , MonadState (TransitionState sm v))
 
 runTransitionM
   :: NodeConfig
-  -> PersistentState v
-  -> TransitionM v a
-  -> (a, PersistentState v, TransitionWriter v)
-runTransitionM nodeConfig persistentState transition =
-  runRWS (unTransitionM transition) nodeConfig persistentState
+  -> TransitionState sm v
+  -> TransitionM sm v a
+  -> (a, TransitionState sm v, TransitionWriter sm v)
+runTransitionM nodeConfig transState transition =
+  runRWS (unTransitionM transition) nodeConfig transState
 
 --------------------------------------------------------------------------------
 -- Handlers
 --------------------------------------------------------------------------------
 
-type RPCHandler s r v = RPCType r v => NodeState s -> NodeId -> r -> TransitionM v (ResultState s v)
-type TimeoutHandler s v = NodeState s -> Timeout -> TransitionM v (ResultState s v)
-type ClientReqHandler s v = NodeState s -> ClientWriteReq v -> TransitionM v (ResultState s v)
+type RPCHandler ns sm r v = RPCType r v => NodeState ns -> NodeId -> r -> TransitionM sm v (ResultState ns v)
+type TimeoutHandler ns sm v = NodeState ns -> Timeout -> TransitionM sm v (ResultState ns v)
+type ClientReqHandler ns sm v = NodeState ns -> ClientRequest v -> TransitionM sm v (ResultState ns v)
 
 --------------------------------------------------------------------------------
 -- RWS Helpers
 --------------------------------------------------------------------------------
 
 -- | Helper for message actions
-toRPCMessage :: RPCType r v => r -> TransitionM v (Message v)
-toRPCMessage msg = flip RPC (toRPC msg) <$> asks configNodeId
+toRPCMessage :: RPCType r v => r -> TransitionM sm v (RPCMessage v)
+toRPCMessage msg = flip RPCMessage (toRPC msg) <$> asks configNodeId
 
-broadcast :: RPCType r v => r -> TransitionM v ()
+broadcast :: RPCType r v => r -> TransitionM sm v ()
 broadcast msg = do
   selfNodeId <- asks configNodeId
   action <-
-    Broadcast
+    BroadcastRPC
       <$> asks (Set.filter (selfNodeId /=) . configNodeIds)
       <*> toRPCMessage msg
   tellActions [action]
 
-send :: RPCType r v => NodeId -> r -> TransitionM v ()
+send :: RPCType r v => NodeId -> r -> TransitionM sm v ()
 send nodeId msg = do
-  action <- SendMessage nodeId <$> toRPCMessage msg
+  action <- SendRPCMessage nodeId <$> toRPCMessage msg
   tellActions [action]
 
-uniqueBroadcast :: RPCType r v => Map NodeId r -> TransitionM v ()
+uniqueBroadcast :: RPCType r v => Map NodeId r -> TransitionM sm v ()
 uniqueBroadcast msgs = do
-  action <- SendMessages <$> mapM toRPCMessage msgs
+  action <- SendRPCMessages <$> mapM toRPCMessage msgs
   tellActions [action]
 
 -- | Resets the election timeout.
-resetElectionTimeout :: TransitionM v ()
+resetElectionTimeout :: TransitionM sm v ()
 resetElectionTimeout = tellActions [ResetTimeoutTimer ElectionTimeout]
 
-resetHeartbeatTimeout :: TransitionM v ()
+resetHeartbeatTimeout :: TransitionM sm v ()
 resetHeartbeatTimeout = tellActions [ResetTimeoutTimer HeartbeatTimeout]
 
-redirectClientToLeader :: ClientId -> CurrentLeader -> TransitionM v ()
-redirectClientToLeader clientId currentLeader =
-  tellActions [RedirectClient clientId currentLeader]
+redirectClientToLeader :: ClientId -> CurrentLeader -> TransitionM sm v ()
+redirectClientToLeader clientId currentLeader = do
+  let clientRedirResp = ClientRedirectResponse (ClientRedirResp currentLeader)
+  tellActions [RespondToClient clientId clientRedirResp]
 
-applyLogEntry :: Index -> TransitionM v ()
+respondClientRead :: ClientId -> TransitionM sm v ()
+respondClientRead clientId = do
+  clientReadResp <- ClientReadResponse . ClientReadResp <$> getStateMachine
+  tellActions [RespondToClient clientId clientReadResp]
+
+--------------------------------------------------------------------------------
+
+-- | Apply a log entry at the given index to the state machine
+applyLogEntry :: Show v => StateMachine sm v => Index -> TransitionM sm v ()
 applyLogEntry idx = do
-  mLogEntry <- lookupLogEntry idx <$> gets psLog
+  mLogEntry <- lookupLogEntry idx . psLog <$> getPersistentState
   case mLogEntry of
     Nothing -> panic "Cannot apply non existent log entry to state machine"
-    Just logEntry -> tellActions [ApplyCommittedLogEntry logEntry]
+    Just logEntry ->
+      modify $ \transState -> do
+        let stateMachine = transStateMachine transState
+            v = entryValue logEntry
+        transState { transStateMachine = applyCommittedLogEntry stateMachine v }
 
-incrementTerm :: TransitionM v ()
+incrementTerm :: TransitionM sm v ()
 incrementTerm = do
-  psNextTerm <- gets (incrTerm . psCurrentTerm)
-  modify $ \pstate ->
+  psNextTerm <- incrTerm . psCurrentTerm <$> getPersistentState
+  modifyPersistentState $ \pstate ->
     pstate { psCurrentTerm = psNextTerm
            , psVotedFor = Nothing
            }
 
-appendNewLogEntries :: Seq (Entry v) -> TransitionM v ()
+appendNewLogEntries :: Show v => Seq (Entry v) -> TransitionM sm v ()
 appendNewLogEntries newEntries =
-  modify $ \pstate ->
+  modifyPersistentState $ \pstate ->
     case appendLogEntries (psLog pstate) newEntries of
       Left err -> panic (show err)
       Right newLog -> pstate { psLog = newLog }
 
-updateElectionTimeoutCandidateState :: Index -> Index -> TransitionM v CandidateState
+updateElectionTimeoutCandidateState :: Index -> Index -> TransitionM sm v CandidateState
 updateElectionTimeoutCandidateState commitIndex lastApplied = do
   -- State modifications
   incrementTerm
@@ -169,10 +211,10 @@ updateElectionTimeoutCandidateState commitIndex lastApplied = do
     }
   where
   requestVoteMessage = do
-    term <- gets psCurrentTerm
+    term <- psCurrentTerm <$> getPersistentState
     selfNodeId <- asks configNodeId
     (logEntryIndex, logEntryTerm) <-
-      lastLogEntryIndexAndTerm <$> gets psLog
+      lastLogEntryIndexAndTerm . psLog <$> getPersistentState
     pure RequestVote
       { rvTerm = term
       , rvCandidateId = selfNodeId
@@ -182,5 +224,5 @@ updateElectionTimeoutCandidateState commitIndex lastApplied = do
 
   voteForSelf = do
     selfNodeId <- asks configNodeId
-    modify $ \pstate ->
+    modifyPersistentState $ \pstate ->
       pstate { psVotedFor = Just selfNodeId }

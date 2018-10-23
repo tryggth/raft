@@ -39,11 +39,11 @@ import Raft.Types
 --------------------------------------------------------------------------------
 
 -- | Leaders should not respond to 'AppendEntries' messages.
-handleAppendEntries :: RPCHandler 'Leader (AppendEntries v) v
+handleAppendEntries :: RPCHandler 'Leader sm (AppendEntries v) v
 handleAppendEntries (NodeLeaderState ls)_ _  =
   pure (leaderResultState Noop ls)
 
-handleAppendEntriesResponse :: RPCHandler 'Leader AppendEntriesResponse v
+handleAppendEntriesResponse :: Show v => RPCHandler 'Leader sm AppendEntriesResponse v
 handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp
   -- If AppendEntries fails (aerSuccess == False) because of log inconsistency,
   -- decrement nextIndex and retry
@@ -54,7 +54,7 @@ handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp
       pure (leaderResultState Noop newLeaderState)
   | otherwise = do
       mLastLogEntryIndex <-
-        fmap entryIndex . lastLogEntry <$> gets psLog
+        fmap entryIndex . lastLogEntry . psLog <$> getPersistentState
       newLeaderState <-
         case mLastLogEntryIndex of
           Nothing -> pure ls
@@ -67,22 +67,22 @@ handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp
       -- replicated an entry at a given term.
       newestLeaderState <- incrCommitIndex newLeaderState
       when (lsCommitIndex newestLeaderState > lsCommitIndex newLeaderState) $ do
-        Just clientId <- lastLogEntryClientId <$> gets psLog
-        tellActions [RespondToClient clientId (ClientWriteRes (lsCommitIndex newestLeaderState))]
+        Just clientId <- lastLogEntryClientId . psLog <$> getPersistentState
+        tellActions [RespondToClient clientId (ClientWriteResponse (ClientWriteResp (lsCommitIndex newestLeaderState)))]
       tellLogWithState ns $ toS $ "HandleAppendEntriesResponse: " ++ show (aerSuccess appendEntriesResp)
       pure (leaderResultState Noop newestLeaderState)
 
 -- | Leaders should not respond to 'RequestVote' messages.
-handleRequestVote :: RPCHandler 'Leader RequestVote v
+handleRequestVote :: RPCHandler 'Leader sm RequestVote v
 handleRequestVote (NodeLeaderState ls) _ _ =
   pure (leaderResultState Noop ls)
 
 -- | Leaders should not respond to 'RequestVoteResponse' messages.
-handleRequestVoteResponse :: RPCHandler 'Leader RequestVoteResponse v
+handleRequestVoteResponse :: RPCHandler 'Leader sm RequestVoteResponse v
 handleRequestVoteResponse (NodeLeaderState ls) _ _ =
   pure (leaderResultState Noop ls)
 
-handleTimeout :: TimeoutHandler 'Leader v
+handleTimeout :: Show v => TimeoutHandler 'Leader sm v
 handleTimeout (NodeLeaderState ls) timeout =
   case timeout of
     -- Leader does not handle election timeouts
@@ -92,17 +92,23 @@ handleTimeout (NodeLeaderState ls) timeout =
       uniqueBroadcast =<< appendEntriesRPCs ls
       pure (leaderResultState SendHeartbeat ls)
 
-handleClientRequest :: ClientReqHandler 'Leader v
-handleClientRequest (NodeLeaderState ls) (ClientWriteReq clientId v) = do
-    lastLogEntryIndex <- lastLogEntryIndex <$> gets psLog
-    broadcast =<< mkAppendEntriesRPC =<< mkNewLogEntry lastLogEntryIndex
+-- | The leader handles all client requests, responding with the current state
+-- machine on a client read, and appending an entry to the log on a valid client
+-- write.
+handleClientRequest :: Show v => ClientReqHandler 'Leader sm v
+handleClientRequest (NodeLeaderState ls) (ClientRequest clientId cr) = do
+    case cr of
+      ClientReadReq -> respondClientRead clientId
+      ClientWriteReq v -> do
+        idx <- nextLogEntryIndex . psLog <$> getPersistentState
+        broadcast =<< mkAppendEntriesRPC =<< mkNewLogEntry v idx
     pure (leaderResultState Noop ls)
   where
     mkAppendEntriesRPC entry =
       appendEntriesRPC (entry :<| Empty) ls
 
-    mkNewLogEntry idx = do
-      currentTerm <- gets psCurrentTerm
+    mkNewLogEntry v idx = do
+      currentTerm <- psCurrentTerm <$> getPersistentState
       pure $ Entry
         { entryIndex = idx
         , entryTerm = currentTerm
@@ -114,10 +120,10 @@ handleClientRequest (NodeLeaderState ls) (ClientWriteReq clientId v) = do
 
 -- | If there exists an N such that N > commitIndex, a majority of
 -- matchIndex[i] >= N, and log[N].term == currentTerm: set commitIndex = N
-incrCommitIndex :: LeaderState -> TransitionM v LeaderState
+incrCommitIndex :: Show v => LeaderState -> TransitionM sm v LeaderState
 incrCommitIndex leaderState@LeaderState{..} = do
-    mlatestEntry <- lastLogEntry <$> gets psLog
-    currentTerm <- gets psCurrentTerm
+    mlatestEntry <- lastLogEntry . psLog <$> getPersistentState
+    currentTerm <- psCurrentTerm <$> getPersistentState
     case mlatestEntry of
       Nothing -> pure leaderState
       Just latestEntry
@@ -133,21 +139,21 @@ incrCommitIndex leaderState@LeaderState{..} = do
 
 -- | Construct bespoke AppendEntriesRPC values for each follower, with respect
 -- to their current 'nextIndex' stored in the LeaderState.
-appendEntriesRPCs :: LeaderState -> TransitionM v (Map NodeId (AppendEntries v))
+appendEntriesRPCs :: Show v => LeaderState -> TransitionM sm v (Map NodeId (AppendEntries v))
 appendEntriesRPCs leaderState@LeaderState{..} =
   forM lsNextIndex $ \nextIndex -> do
-    logEntries <- flip takeLogEntriesUntil nextIndex <$> gets psLog
+    logEntries <- flip takeLogEntriesUntil nextIndex . psLog <$> getPersistentState
     case logEntries of
       Empty -> appendEntriesRPC Empty leaderState
       entries -> appendEntriesRPC entries leaderState
 
 -- | Construct an AppendEntriesRPC given log entries and a leader state.
-appendEntriesRPC :: Entries v -> LeaderState -> TransitionM v (AppendEntries v)
+appendEntriesRPC :: Show v => Entries v -> LeaderState -> TransitionM sm v (AppendEntries v)
 appendEntriesRPC entries leaderState = do
-  term <- gets psCurrentTerm
+  term <- psCurrentTerm <$> getPersistentState
   leaderId <- asks configNodeId
   (prevLogIndex, prevLogTerm) <-
-    lastLogEntryIndexAndTerm <$> gets psLog
+    lastLogEntryIndexAndTerm . psLog <$> getPersistentState
   appendNewLogEntries entries
   pure AppendEntries
     { aeTerm = term

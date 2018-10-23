@@ -3,12 +3,12 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Raft where
 
@@ -24,9 +24,8 @@ import Control.Monad.Catch
 import Control.Monad.Trans.Class
 
 import qualified Data.Map as Map
-
 import Numeric.Natural
-import System.Random (StdGen, randomR, RandomGen, mkStdGen)
+import System.Random (randomIO)
 
 import Raft.Action
 import Raft.Client
@@ -44,18 +43,17 @@ import Raft.Types
 -- | Provide an interface for nodes to send/receive messages to/from one
 -- another. E.g. Control.Concurrent.Chan, Network.Socket, etc.
 class RaftSendRPC m v where
-  sendRPC :: NodeId -> Message v -> m ()
+  sendRPC :: NodeId -> RPCMessage v -> m ()
 
 class RaftRecvRPC m v where
-  receiveRPC :: m (Message v)
+  receiveRPC :: m (RPCMessage v)
 
-class RaftClientRPC m s where
-  sendClientRPC :: ClientId -> ClientReadRes s -> m ()
 
---- | The underlying raft state machine. Functional dependency permitting only
---a single state machine command to be defined to update the state machine.
-class RaftStateMachine sm cmd | sm -> cmd where
-  applyCommittedLogEntry :: sm -> cmd -> sm
+class RaftSendClient m sm where
+  sendClient :: ClientId -> ClientResponse sm -> m ()
+
+class RaftRecvClient m v where
+  receiveClient :: m (ClientRequest v)
 
 -- | A typeclass providing an interface to save and load the persistent state of
 -- a raft node.
@@ -67,28 +65,17 @@ class RaftPersist m v where
   savePersistentState :: PersistentState v -> m ()
   loadPersistentState :: m (PersistentState v)
 
--- | The pure state of the raft node
---
--- TODO: Will probably have to store the state machine in a [write only (?)]
--- concurrent variable, as the client program using this raft implementation
--- will need the ability to read the current state of the state machine at
--- arbitrary times.
-data RaftState s v = RaftState
-  { serverNodeState :: RaftNodeState v
-  , serverStateMachine :: s
-  }
-
 -- | The raft server environment composed of the concurrent variables used in
 -- the effectful raft layer.
-data RaftEnv s v m = RaftEnv
+data RaftEnv v m = RaftEnv
   { serverEventChan :: TChan (STM m) (Event v)
   , serverElectionTimer :: Timer m
   , serverHeartbeatTimer :: Timer m
   }
 
 newtype RaftT s v m a = RaftT
-  { unRaftT :: ReaderT (RaftEnv s v m) (StateT (RaftState s v) m) a
-  } deriving (Functor, Applicative, Monad, MonadReader (RaftEnv s v m), MonadState (RaftState s v), Alternative, MonadPlus)
+  { unRaftT :: ReaderT (RaftEnv v m) (StateT (RaftNodeState s) m) a
+  } deriving (Functor, Applicative, Monad, MonadReader (RaftEnv v m), MonadState (RaftNodeState s), Alternative, MonadPlus)
 
 instance MonadTrans (RaftT s m) where
   lift = RaftT . lift . lift
@@ -100,104 +87,100 @@ deriving instance MonadConc m => MonadConc (RaftT s v m)
 
 runRaftT
   :: MonadConc m
-  => RaftState s v
-  -> RaftEnv s v m
+  => RaftNodeState s
+  -> RaftEnv v m
   -> RaftT s v m ()
   -> m ()
-runRaftT raftState raftEnv =
-  flip evalStateT raftState . flip runReaderT raftEnv . unRaftT
+runRaftT raftNodeState raftEnv =
+  flip evalStateT raftNodeState . flip runReaderT raftEnv . unRaftT
 
 ------------------------------------------------------------------------------
 
 runRaftNode
-   :: forall s v m.
-     ( Show v
+   :: forall s sm v m.
+     ( Show v, Show sm
      , MonadConc m
-     , RaftStateMachine s v
+     , StateMachine sm v
      , RaftSendRPC m v
      , RaftRecvRPC m v
      , RaftPersist m v
-     , RaftClientRPC m s
+     , RaftSendClient m sm
+     , RaftRecvClient m v
      )
    => NodeConfig
-   -> s
-   -> (TWLog -> m())
+   -> Int
+   -> sm
+   -> (TWLog -> m ())
    -> m ()
-runRaftNode nodeConfig@NodeConfig{..} initStateMachine logWriter = do
-  eventChan <- atomically newTChan
-  electionTimer <- newTimer configElectionTimeout
-  heartbeatTimer <- newTimer (configHeartbeatTimeout, configHeartbeatTimeout)
+runRaftNode nodeConfig@NodeConfig{..} timerSeed initStateMachine logWriter = do
+  eventChan <- atomically newTChan :: m (TChan (STM m) (Event v))
+
+  electionTimer <- newTimerRange timerSeed configElectionTimeout
+  heartbeatTimer <- newTimer configHeartbeatTimeout
 
   fork (electionTimeoutTimer electionTimer eventChan)
   fork (heartbeatTimeoutTimer heartbeatTimer eventChan)
   fork (rpcHandler eventChan)
+  fork (clientReqHandler eventChan)
 
-  let raftState = RaftState initRaftNodeState initStateMachine
-      raftEnv = RaftEnv eventChan electionTimer heartbeatTimer
-  runRaftT raftState raftEnv (handleEventLoop nodeConfig logWriter)
+  let raftEnv = RaftEnv eventChan electionTimer heartbeatTimer
+  runRaftT initRaftNodeState raftEnv $
+    handleEventLoop nodeConfig initStateMachine logWriter
 
 
 handleEventLoop
-   :: forall v m s.
-      ( Show v
+   :: forall s sm v m.
+      ( Show v, Show sm
       , MonadConc m
-      , RaftStateMachine s v
+      , StateMachine sm v
       , RaftPersist m v
       , RaftSendRPC m v
-      , RaftClientRPC m s
+      , RaftSendClient m sm
+      , RaftRecvClient m v
       )
    => NodeConfig
+   -> sm
    -> (TWLog -> m ())
    -> RaftT s v m ()
-handleEventLoop nodeConfig logWriter = do
-    handleEventLoop' =<< lift loadPersistentState
+handleEventLoop nodeConfig initStateMachine logWriter = do
+    handleEventLoop' =<<
+      flip TransitionState initStateMachine <$> lift loadPersistentState
   where
-    handleEventLoop' :: PersistentState v -> RaftT s v m ()
-    handleEventLoop' persistentState = do
+    handleEventLoop' :: TransitionState sm v -> RaftT s v m ()
+    handleEventLoop' transitionState = do
+      raftNodeState <- get
       event <- atomically . readTChan =<< asks serverEventChan
-      case event of
-        ClientReadRequest (ClientReadReq cid) -> do
-          sm <- gets serverStateMachine
-          lift $ sendClientRPC cid (ClientReadRes sm)
-        _ -> do
-          raftNodeState <- gets serverNodeState
-          let (resRaftNodeState, resPersistentState, transitionW) =
-                Raft.Handle.handleEvent nodeConfig raftNodeState persistentState event
-          lift $ savePersistentState resPersistentState
-          updateRaftNodeState resRaftNodeState
-          handleActions $ twActions transitionW
-          handleLogs logWriter $ twLogs transitionW
-          handleEventLoop' resPersistentState
+      let (resRaftNodeState, resTransitionState, transitionW) =
+            Raft.Handle.handleEvent nodeConfig raftNodeState transitionState event
+      lift $ savePersistentState (transPersistentState resTransitionState)
+      updateRaftNodeState resRaftNodeState
+      handleLogs logWriter $ twLogs transitionW
+      handleActions $ twActions transitionW
+      handleEventLoop' resTransitionState
 
-    updateRaftNodeState :: RaftNodeState v -> RaftT s v m ()
+    updateRaftNodeState :: RaftNodeState s -> RaftT s v m ()
     updateRaftNodeState newRaftNodeState =
-      modify $ \raftState ->
-        raftState { serverNodeState = newRaftNodeState }
+      modify $ const newRaftNodeState
 
 handleActions
-  :: (Show v, MonadConc m, RaftStateMachine s v, RaftSendRPC m v)
-  => [Action v]
+  :: (Show v, Show sm, MonadConc m, StateMachine sm v, RaftSendRPC m v, RaftSendClient m sm)
+  => [Action sm v]
   -> RaftT s v m ()
 handleActions = mapM_ handleAction
 
 handleAction
-  :: (Show v, MonadConc m, RaftStateMachine s v, RaftSendRPC m v)
-  => Action v
-  -> RaftT s v m ()
-handleAction action =
+   :: (Show v, Show sm, MonadConc m, StateMachine sm v, RaftSendRPC m v, RaftSendClient m sm)
+   => Action sm v
+   -> RaftT s v m ()
+handleAction action = do
+  traceM $ "Handling action: " <> show action
   case action of
-    SendMessage nid msg -> lift (sendRPC nid msg)
-    SendMessages msgs ->
+    SendRPCMessage nid msg -> lift (sendRPC nid msg)
+    SendRPCMessages msgs ->
       forConcurrently_ (Map.toList msgs) $ \(nid, msg) ->
         lift (sendRPC nid msg)
-    Broadcast nids msg -> mapConcurrently_ (lift . flip sendRPC msg) nids
-    RedirectClient (ClientId cid) currLdr -> undefined
-    RespondToClient cid _ -> undefined
-    ApplyCommittedLogEntry entry ->
-      modify $ \raftState -> do
-        let stateMachine = serverStateMachine raftState
-            v = entryValue entry
-        raftState { serverStateMachine = applyCommittedLogEntry stateMachine v }
+    BroadcastRPC nids msg -> mapConcurrently_ (lift . flip sendRPC msg) nids
+    RespondToClient cid cr -> lift $ sendClient cid cr
     ResetTimeoutTimer tout ->
       case tout of
         ElectionTimeout -> resetServerTimer serverElectionTimer
@@ -207,7 +190,7 @@ handleAction action =
       lift . resetTimer =<< asks f
 
 handleLogs
-  :: (Show v, MonadConc m)
+  :: (MonadConc m)
   => (TWLog -> m ())
   -> TWLogs
   -> RaftT s v m ()
@@ -219,21 +202,30 @@ handleLogs f logs = lift $ mapM_ f logs
 
 -- | Producer for rpc message events
 rpcHandler
-  :: (Show v, MonadConc m, RaftRecvRPC m v)
+  :: (MonadConc m, RaftRecvRPC m v)
   => TChan (STM m) (Event v)
   -> m ()
 rpcHandler eventChan =
   forever $
     receiveRPC >>= \rpcMsg ->
-      atomically $ writeTChan eventChan (Message rpcMsg)
+      atomically $ writeTChan eventChan (MessageEvent (RPCMessageEvent rpcMsg))
+
+-- | Producer for rpc message events
+clientReqHandler
+  :: (MonadConc m, RaftRecvClient m v)
+  => TChan (STM m) (Event v)
+  -> m ()
+clientReqHandler eventChan =
+  forever $
+    receiveClient >>= \clientReq ->
+      atomically $ writeTChan eventChan (MessageEvent (ClientRequestEvent clientReq))
 
 -- | Producer for the election timeout event
-electionTimeoutTimer :: MonadConc m => Timer m -> TChan (STM m) (Event v)
- -> m ()
+electionTimeoutTimer :: MonadConc m => Timer m -> TChan (STM m) (Event v) -> m ()
 electionTimeoutTimer timer eventChan =
   forever $ do
     startTimer timer >> waitTimer timer
-    atomically $ writeTChan eventChan (Timeout ElectionTimeout)
+    atomically $ writeTChan eventChan (TimeoutEvent ElectionTimeout)
 
 
 -- | Producer for the heartbeat timeout event
@@ -241,4 +233,4 @@ heartbeatTimeoutTimer :: MonadConc m => Timer m -> TChan (STM m) (Event v) -> m 
 heartbeatTimeoutTimer timer eventChan =
   forever $ do
     startTimer timer >> waitTimer timer
-    atomically $ writeTChan eventChan (Timeout HeartbeatTimeout)
+    atomically $ writeTChan eventChan (TimeoutEvent HeartbeatTimeout)
