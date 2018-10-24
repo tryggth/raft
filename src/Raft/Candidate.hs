@@ -69,13 +69,14 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
   currentTerm <- psCurrentTerm <$> getPersistentState
   cNodeIds <- asks configNodeIds
   if  | rvrTerm > currentTerm -> stepDown sender rvrTerm csCommitIndex csLastApplied
-      | not rvrVoteGranted -> pure $ candidateResultState Noop candidateState
       | Set.member sender csVotes -> pure $ candidateResultState Noop candidateState
+      | not rvrVoteGranted -> pure $ candidateResultState Noop candidateState
       | otherwise -> do
           let newCsVotes = Set.insert sender csVotes
-
           if not $ hasMajority cNodeIds newCsVotes
-            then pure $ candidateResultState Noop candidateState
+            then do
+              let newCandidateState = candidateState { csVotes = newCsVotes }
+              pure $ candidateResultState Noop newCandidateState
             else leaderResultState BecomeLeader <$> becomeLeader csCommitIndex csLastApplied
 
   where
