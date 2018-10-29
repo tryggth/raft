@@ -310,7 +310,7 @@ main = do
         let initClientState = ConsoleState {
             csNodeIds = mempty, csSocket = clientSocket, csPort = clientPort, csLeaderId = leaderIdT }
         runConsoleT initClientState $
-          evalRepl ">>> " (unConsoleM . handleConsoleCmd) [] (Word completer) (pure ())
+          evalRepl (pure ">>> ") (unConsoleM . handleConsoleCmd) [] Nothing (Word completer) (pure ())
       (nid:nids) -> do
         let (host, port) = nidToHostPort (toS nid)
         let peers = Set.fromList nids
