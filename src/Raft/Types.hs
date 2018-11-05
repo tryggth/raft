@@ -10,8 +10,6 @@ module Raft.Types where
 import Protolude
 
 import Data.Serialize
-import Data.Sequence (Seq(Empty, (:<|)), (<|))
-import qualified Data.Sequence as Seq
 import Numeric.Natural (Natural)
 
 --------------------------------------------------------------------------------
@@ -39,6 +37,10 @@ term0 = Term 0
 
 incrTerm :: Term -> Term
 incrTerm = succ
+
+prevTerm :: Term -> Term
+prevTerm (Term 0) = Term 0
+prevTerm t = pred t
 
 --------------------------------------------------------------------------------
 -- Index

@@ -11,69 +11,53 @@ module Raft.Handle where
 
 import Protolude
 
-import Control.Monad.Writer.Strict
-
-import Data.Type.Bool
-import Data.Monoid
-
 import qualified Raft.Follower as Follower
 import qualified Raft.Candidate as Candidate
 import qualified Raft.Leader as Leader
 
-import Raft.Action
-import Raft.Config
-import Raft.Client
 import Raft.Event
 import Raft.Monad
 import Raft.NodeState
 import Raft.Persistent
 import Raft.RPC
-import Raft.Types
 
 -- | Main entry point for handling events
 handleEvent
   :: forall s sm v.
      (StateMachine sm v, Show v)
-  => NodeConfig
-  -> RaftNodeState s
-  -> TransitionState sm v
+  => RaftNodeState s
+  -> TransitionEnv sm
+  -> PersistentState
   -> Event v
-  -> (RaftNodeState s, TransitionState sm v, TransitionWriter sm v)
-handleEvent nodeConfig raftNodeState@(RaftNodeState initNodeState) transitionState event =
+  -> (RaftNodeState s, PersistentState, TransitionWriter sm v)
+handleEvent raftNodeState@(RaftNodeState initNodeState) transitionEnv persistentState event =
     -- Rules for all servers:
     case handleNewerRPCTerm of
-      (RaftNodeState resNodeState, transitionState', transitionW) ->
-        case handleEvent' (raftHandler resNodeState) nodeConfig resNodeState transitionState' event of
-          (ResultState _ resultState, transitionState'', transitionW') ->
-            (RaftNodeState resultState, transitionState'', transitionW <> transitionW')
+      (RaftNodeState resNodeState, persistentState', outputs) ->
+        case handleEvent' resNodeState transitionEnv persistentState' event of
+          (ResultState _ resultState, persistentState'', outputs') ->
+            (RaftNodeState resultState, persistentState'', outputs <> outputs')
   where
-    raftHandler :: forall ns sm. NodeState ns -> RaftHandler ns sm v
-    raftHandler nodeState =
-      case nodeState of
-        NodeFollowerState _ -> followerRaftHandler
-        NodeCandidateState _ -> candidateRaftHandler
-        NodeLeaderState _ -> leaderRaftHandler
-
-    handleNewerRPCTerm :: (RaftNodeState s, TransitionState sm v, TransitionWriter sm v)
+    handleNewerRPCTerm :: (RaftNodeState s, PersistentState, TransitionWriter sm v)
     handleNewerRPCTerm =
       case event of
         MessageEvent (RPCMessageEvent (RPCMessage _ rpc)) ->
-          runTransitionM nodeConfig transitionState $ do
+          runTransitionM transitionEnv persistentState $ do
             -- If RPC request or response contains term T > currentTerm: set
             -- currentTerm = T, convert to follower
-            currentTerm <- psCurrentTerm <$> getPersistentState
-            if rpcTerm rpc > currentTerm
+            currentTerm <- gets currentTerm
+            if currentTerm < rpcTerm rpc
               then
                 case convertToFollower initNodeState of
                   ResultState _ nodeState -> do
-                    modifyPersistentState $ \pstate ->
-                      pstate { psCurrentTerm = rpcTerm rpc
-                             , psVotedFor = Nothing
+                    modify $ \pstate ->
+                      pstate { currentTerm = rpcTerm rpc
+                             , votedFor = Nothing
                              }
                     resetElectionTimeout
                     pure (RaftNodeState nodeState)
               else pure raftNodeState
-        _ -> (raftNodeState, transitionState, mempty)
+        _ -> (raftNodeState, persistentState, mempty)
 
     convertToFollower :: forall s. NodeState s -> ResultState s v
     convertToFollower nodeState =
@@ -86,6 +70,8 @@ handleEvent nodeConfig raftNodeState@(RaftNodeState initNodeState) transitionSta
               { fsCurrentLeader = NoLeader
               , fsCommitIndex = csCommitIndex cs
               , fsLastApplied = csLastApplied cs
+              , fsLastLogEntryData = csLastLogEntryData cs
+              , fsEntryTermAtAEIndex = Nothing
               }
         NodeLeaderState ls ->
           ResultState HigherTermFoundLeader $
@@ -93,6 +79,10 @@ handleEvent nodeConfig raftNodeState@(RaftNodeState initNodeState) transitionSta
               { fsCurrentLeader = NoLeader
               , fsCommitIndex = lsCommitIndex ls
               , fsLastApplied = lsLastApplied ls
+              , fsLastLogEntryData =
+                  let (lastLogEntryIdx, lastLogEntryTerm, _) = lsLastLogEntryData ls
+                   in (lastLogEntryIdx, lastLogEntryTerm)
+              , fsEntryTermAtAEIndex = Nothing
               }
 
 
@@ -135,81 +125,42 @@ leaderRaftHandler = RaftHandler
   , handleClientRequest = Leader.handleClientRequest
   }
 
+mkRaftHandler :: forall ns sm v. Show v => NodeState ns -> RaftHandler ns sm v
+mkRaftHandler nodeState =
+  case nodeState of
+    NodeFollowerState _ -> followerRaftHandler
+    NodeCandidateState _ -> candidateRaftHandler
+    NodeLeaderState _ -> leaderRaftHandler
+
 handleEvent'
   :: forall ns sm v.
      (StateMachine sm v, Show v)
-  => RaftHandler ns sm v
-  -> NodeConfig
-  -> NodeState ns
-  -> TransitionState sm v
+  => NodeState ns
+  -> TransitionEnv sm
+  -> PersistentState
   -> Event v
-  -> (ResultState ns v, TransitionState sm v, TransitionWriter sm v)
-handleEvent' raftHandler@RaftHandler{..} nodeConfig initNodeState transitionState event =
-    runTransitionM nodeConfig transitionState $
+  -> (ResultState ns v, PersistentState, TransitionWriter sm v)
+handleEvent' initNodeState transitionEnv persistentState event =
+    runTransitionM transitionEnv persistentState $
       case event of
         MessageEvent mev ->
           case mev of
             RPCMessageEvent rpcMsg -> handleRPCMessage rpcMsg
             ClientRequestEvent cr -> do
-              tellLogWithState initNodeState (show cr)
               handleClientRequest initNodeState cr
         TimeoutEvent tout -> do
-          tellLogWithState initNodeState (show tout)
           handleTimeout initNodeState tout
   where
+    RaftHandler{..} = mkRaftHandler initNodeState
+
     handleRPCMessage :: RPCMessage v -> TransitionM sm v (ResultState ns v)
-    handleRPCMessage (RPCMessage sender rpc) = do
-      resState@(ResultState transition newNodeState) <- case rpc of
-        AppendEntriesRPC appendEntries -> do
-          tellLogWithState initNodeState (show appendEntries)
+    handleRPCMessage (RPCMessage sender rpc) =
+      case rpc of
+        AppendEntriesRPC appendEntries ->
           handleAppendEntries initNodeState sender appendEntries
-        AppendEntriesResponseRPC appendEntriesResp -> do
-          tellLogWithState initNodeState (show appendEntriesResp)
+        AppendEntriesResponseRPC appendEntriesResp ->
           handleAppendEntriesResponse initNodeState sender appendEntriesResp
-        RequestVoteRPC requestVote -> do
-          tellLogWithState initNodeState (show requestVote)
+        RequestVoteRPC requestVote ->
           handleRequestVote initNodeState sender requestVote
-        RequestVoteResponseRPC requestVoteResp -> do
-          tellLogWithState initNodeState (show requestVoteResp)
+        RequestVoteResponseRPC requestVoteResp ->
           handleRequestVoteResponse initNodeState sender requestVoteResp
-
-      -- If commitIndex > lastApplied: increment lastApplied, apply
-      -- log[lastApplied] to state machine (Section 5.3)
-      newestNodeState <-
-        if commitIndex newNodeState > lastApplied newNodeState
-          then incrLastApplied newNodeState
-          else pure newNodeState
-
-      pure $ ResultState transition newestNodeState
-
-    incrLastApplied :: NodeState ns' -> TransitionM sm v (NodeState ns')
-    incrLastApplied nodeState =
-      case nodeState of
-        NodeFollowerState fs -> do
-          applyLogEntry (lastApplied nodeState)
-          let lastApplied' = incrIndex (fsLastApplied fs)
-          pure $ NodeFollowerState $
-            fs { fsLastApplied = lastApplied' }
-        NodeCandidateState cs -> do
-          applyLogEntry (lastApplied nodeState)
-          let lastApplied' = incrIndex (csLastApplied cs)
-          pure $ NodeCandidateState $
-            cs { csLastApplied = lastApplied' }
-        NodeLeaderState ls -> do
-          applyLogEntry (lastApplied nodeState)
-          let lastApplied' = incrIndex (lsLastApplied ls)
-          pure $ NodeLeaderState $
-            ls { lsLastApplied = lastApplied' }
-
-    getLastAppliedAndCommitIndex :: NodeState s' -> (Index, Index)
-    getLastAppliedAndCommitIndex nodeState =
-      case nodeState of
-        NodeFollowerState fs -> (fsLastApplied fs, fsCommitIndex fs)
-        NodeCandidateState cs -> (csLastApplied cs, csCommitIndex cs)
-        NodeLeaderState ls -> (lsLastApplied ls, lsCommitIndex ls)
-
-    lastApplied :: NodeState s' -> Index
-    lastApplied = fst . getLastAppliedAndCommitIndex
-
-    commitIndex :: NodeState s' -> Index
-    commitIndex = snd . getLastAppliedAndCommitIndex

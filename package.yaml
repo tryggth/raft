@@ -42,6 +42,9 @@ default-extensions:
 
 library:
   source-dirs: src
+  ghc-options: 
+  - -fwarn-unused-binds
+  - -fwarn-unused-imports
 
 executables:
   raft-example:

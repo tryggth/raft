@@ -9,7 +9,6 @@ import qualified Data.Serialize as S
 
 import Raft.Client
 import Raft.RPC
-import Raft.Types
 
 data Timeout
   = ElectionTimeout

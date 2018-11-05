@@ -8,9 +8,7 @@ module Raft.Monad where
 
 import Protolude
 import Control.Monad.RWS
-import Data.Monoid
 import qualified Data.Set as Set
-import qualified Data.Map as Map
 
 import Raft.Action
 import Raft.Client
@@ -35,18 +33,18 @@ class StateMachine sm v | sm -> v where
 -- Raft Monad
 --------------------------------------------------------------------------------
 
-data TWLog = TWLog
+data LogMsg = LogMsg
   { twNodeId :: NodeId
   , twNodeState :: Maybe Text
   , twMsg :: Text
   } deriving Show
 
-type TWLogs = [TWLog]
+type LogMsgs = [LogMsg]
 
 data TransitionWriter sm v = TransitionWriter
   { twActions :: [Action sm v]
-  , twLogs :: TWLogs
-  } deriving (Show)
+  , twLogs :: LogMsgs
+  }
 
 instance Semigroup (TransitionWriter sm v) where
   t1 <> t2 = TransitionWriter (twActions t1 <> twActions t2) (twLogs t1 <> twLogs t2)
@@ -56,8 +54,8 @@ instance Monoid (TransitionWriter sm v) where
 
 tellLog' :: Maybe (NodeState a) -> Text -> TransitionM sm v ()
 tellLog' nsM s = do
-  nId <- asks configNodeId
-  tell (mempty { twLogs = [TWLog nId (mode <$> nsM) s] })
+  nid <- askNodeId
+  tell (mempty { twLogs = [LogMsg nid (mode <$> nsM) s] })
   where
     mode :: NodeState a -> Text
     mode ns =
@@ -78,39 +76,25 @@ tellAction a = tell (TransitionWriter [a] [])
 tellActions :: [Action sm v] -> TransitionM sm v ()
 tellActions as = tell (TransitionWriter as [])
 
-data TransitionState s v = TransitionState
-  { transPersistentState :: PersistentState v
-  , transStateMachine :: s
+data TransitionEnv sm = TransitionEnv
+  { nodeConfig :: NodeConfig
+  , stateMachine :: sm
   }
 
-getPersistentState :: TransitionM sm v (PersistentState v)
-getPersistentState = gets transPersistentState
-
-getStateMachine :: TransitionM sm v sm
-getStateMachine = gets transStateMachine
-
-modifyPersistentState :: (PersistentState v -> PersistentState v) -> TransitionM sm v ()
-modifyPersistentState f =
-  modify $ \transState ->
-    transState { transPersistentState = f (transPersistentState transState) }
-
-modifyStateMachine :: (sm -> sm) -> TransitionM sm v ()
-modifyStateMachine f =
-  modify $ \transState ->
-    transState { transStateMachine = f (transStateMachine transState) }
-
 newtype TransitionM sm v a = TransitionM
-  { unTransitionM :: RWS NodeConfig (TransitionWriter sm v) (TransitionState sm v) a
-  } deriving (Functor, Applicative, Monad, MonadWriter (TransitionWriter sm v), MonadReader NodeConfig
-             , MonadState (TransitionState sm v))
+  { unTransitionM :: RWS (TransitionEnv sm) (TransitionWriter sm v) PersistentState a
+  } deriving (Functor, Applicative, Monad, MonadWriter (TransitionWriter sm v), MonadReader (TransitionEnv sm), MonadState PersistentState)
 
 runTransitionM
-  :: NodeConfig
-  -> TransitionState sm v
+  :: TransitionEnv sm
+  -> PersistentState
   -> TransitionM sm v a
-  -> (a, TransitionState sm v, TransitionWriter sm v)
-runTransitionM nodeConfig transState transition =
-  runRWS (unTransitionM transition) nodeConfig transState
+  -> (a, PersistentState, TransitionWriter sm v)
+runTransitionM transEnv persistentState transition =
+  runRWS (unTransitionM transition) transEnv persistentState
+
+askNodeId :: TransitionM sm v NodeId
+askNodeId = asks (configNodeId . nodeConfig)
 
 --------------------------------------------------------------------------------
 -- Handlers
@@ -124,105 +108,76 @@ type ClientReqHandler ns sm v = NodeState ns -> ClientRequest v -> TransitionM s
 -- RWS Helpers
 --------------------------------------------------------------------------------
 
--- | Helper for message actions
-toRPCMessage :: RPCType r v => r -> TransitionM sm v (RPCMessage v)
-toRPCMessage msg = flip RPCMessage (toRPC msg) <$> asks configNodeId
+broadcast :: SendRPCAction v -> TransitionM sm v ()
+broadcast sendRPC = do
+  selfNodeId <- askNodeId
+  tellAction =<<
+    flip BroadcastRPC sendRPC
+      <$> asks (Set.filter (selfNodeId /=) . configNodeIds . nodeConfig)
 
-broadcast :: RPCType r v => r -> TransitionM sm v ()
-broadcast msg = do
-  selfNodeId <- asks configNodeId
-  action <-
-    BroadcastRPC
-      <$> asks (Set.filter (selfNodeId /=) . configNodeIds)
-      <*> toRPCMessage msg
-  tellActions [action]
-
-send :: RPCType r v => NodeId -> r -> TransitionM sm v ()
-send nodeId msg = do
-  action <- SendRPCMessage nodeId <$> toRPCMessage msg
-  tellActions [action]
-
-uniqueBroadcast :: RPCType r v => Map NodeId r -> TransitionM sm v ()
-uniqueBroadcast msgs = do
-  action <- SendRPCMessages <$> mapM toRPCMessage msgs
-  tellActions [action]
+send :: NodeId -> SendRPCAction v -> TransitionM sm v ()
+send nodeId sendRPC = tellAction (SendRPC nodeId sendRPC)
 
 -- | Resets the election timeout.
 resetElectionTimeout :: TransitionM sm v ()
-resetElectionTimeout = tellActions [ResetTimeoutTimer ElectionTimeout]
+resetElectionTimeout = tellAction (ResetTimeoutTimer ElectionTimeout)
 
 resetHeartbeatTimeout :: TransitionM sm v ()
-resetHeartbeatTimeout = tellActions [ResetTimeoutTimer HeartbeatTimeout]
+resetHeartbeatTimeout = tellAction (ResetTimeoutTimer HeartbeatTimeout)
 
 redirectClientToLeader :: ClientId -> CurrentLeader -> TransitionM sm v ()
 redirectClientToLeader clientId currentLeader = do
   let clientRedirResp = ClientRedirectResponse (ClientRedirResp currentLeader)
-  tellActions [RespondToClient clientId clientRedirResp]
+  tellAction (RespondToClient clientId clientRedirResp)
 
 respondClientRead :: ClientId -> TransitionM sm v ()
 respondClientRead clientId = do
-  clientReadResp <- ClientReadResponse . ClientReadResp <$> getStateMachine
-  tellActions [RespondToClient clientId clientReadResp]
+  clientReadResp <- ClientReadResponse . ClientReadResp <$> asks stateMachine
+  tellAction (RespondToClient clientId clientReadResp)
+
+appendLogEntries :: Show v => Seq (Entry v) -> TransitionM sm v ()
+appendLogEntries = tellAction . AppendLogEntries
 
 --------------------------------------------------------------------------------
 
--- | Apply a log entry at the given index to the state machine
-applyLogEntry :: Show v => StateMachine sm v => Index -> TransitionM sm v ()
-applyLogEntry idx = do
-  mLogEntry <- lookupLogEntry idx . psLog <$> getPersistentState
-  case mLogEntry of
-    Nothing -> panic "Cannot apply non existent log entry to state machine"
-    Just logEntry ->
-      modify $ \transState -> do
-        let stateMachine = transStateMachine transState
-            v = entryValue logEntry
-        transState { transStateMachine = applyCommittedLogEntry stateMachine v }
-
-incrementTerm :: TransitionM sm v ()
-incrementTerm = do
-  psNextTerm <- incrTerm . psCurrentTerm <$> getPersistentState
-  modifyPersistentState $ \pstate ->
-    pstate { psCurrentTerm = psNextTerm
-           , psVotedFor = Nothing
-           }
-
-appendNewLogEntries :: Show v => Seq (Entry v) -> TransitionM sm v ()
-appendNewLogEntries newEntries =
-  modifyPersistentState $ \pstate ->
-    case appendLogEntries (psLog pstate) newEntries of
-      Left err -> panic (show err)
-      Right newLog -> pstate { psLog = newLog }
-
-updateElectionTimeoutCandidateState :: Index -> Index -> TransitionM sm v CandidateState
-updateElectionTimeoutCandidateState commitIndex lastApplied = do
-  -- State modifications
-  incrementTerm
-  voteForSelf
-  -- Actions to perform
-  resetElectionTimeout
-  broadcast =<< requestVoteMessage
-  selfNodeId <- asks configNodeId
-
-  -- Return new candidate state
-  pure CandidateState
-    { csCommitIndex = commitIndex
-    , csLastApplied = lastApplied
-    , csVotes = Set.singleton selfNodeId
-    }
-  where
-  requestVoteMessage = do
-    term <- psCurrentTerm <$> getPersistentState
-    selfNodeId <- asks configNodeId
-    (logEntryIndex, logEntryTerm) <-
-      lastLogEntryIndexAndTerm . psLog <$> getPersistentState
-    pure RequestVote
-      { rvTerm = term
-      , rvCandidateId = selfNodeId
-      , rvLastLogIndex = logEntryIndex
-      , rvLastLogTerm = logEntryTerm
+startElection
+  :: Index
+  -> Index
+  -> (Index, Term) -- ^ Last log entry data
+  -> TransitionM sm v CandidateState
+startElection commitIndex lastApplied lastLogEntryData = do
+    incrementTerm
+    voteForSelf
+    resetElectionTimeout
+    broadcast =<< requestVoteMessage
+    selfNodeId <- askNodeId
+    -- Return new candidate state
+    pure CandidateState
+      { csCommitIndex = commitIndex
+      , csLastApplied = lastApplied
+      , csVotes = Set.singleton selfNodeId
+      , csLastLogEntryData = lastLogEntryData
       }
+  where
+    requestVoteMessage = do
+      term <- currentTerm <$> get
+      selfNodeId <- askNodeId
+      pure $ SendRequestVoteRPC
+        RequestVote
+          { rvTerm = term
+          , rvCandidateId = selfNodeId
+          , rvLastLogIndex = fst lastLogEntryData
+          , rvLastLogTerm = snd lastLogEntryData
+          }
 
-  voteForSelf = do
-    selfNodeId <- asks configNodeId
-    modifyPersistentState $ \pstate ->
-      pstate { psVotedFor = Just selfNodeId }
+    incrementTerm = do
+      psNextTerm <- incrTerm . currentTerm <$> get
+      modify $ \pstate ->
+        pstate { currentTerm = psNextTerm
+               , votedFor = Nothing
+               }
+
+    voteForSelf = do
+      selfNodeId <- askNodeId
+      modify $ \pstate ->
+        pstate { votedFor = Just selfNodeId }

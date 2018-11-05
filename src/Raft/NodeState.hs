@@ -3,13 +3,16 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Raft.NodeState where
 
 import Protolude
 
 import qualified Data.Serialize as S
+import Data.Sequence (Seq(..))
 
+import Raft.Log
 import Raft.Types
 
 data Mode
@@ -68,6 +71,7 @@ leaderResultState transition lstate =
 data RaftNodeState v where
   RaftNodeState :: { unRaftNodeState :: NodeState s } -> RaftNodeState v
 
+-- TODO Take term last long entry term and index as argument
 initRaftNodeState :: RaftNodeState v
 initRaftNodeState =
   RaftNodeState $
@@ -75,6 +79,8 @@ initRaftNodeState =
       { fsCommitIndex = index0
       , fsLastApplied = index0
       , fsCurrentLeader = NoLeader
+      , fsLastLogEntryData = (index0, term0)
+      , fsEntryTermAtAEIndex = Nothing
       }
 
 deriving instance Show (RaftNodeState v)
@@ -101,6 +107,10 @@ data FollowerState = FollowerState
     -- ^ index of highest log entry known to be committed
   , fsLastApplied :: Index
     -- ^ index of highest log entry applied to state machine
+  , fsLastLogEntryData :: (Index, Term)
+    -- ^ the index and term of the last log entry in the node's log
+  , fsEntryTermAtAEIndex :: Maybe Term
+    -- ^ The term of the log entry specified in and AppendEntriesRPC
   } deriving (Show)
 
 data CandidateState = CandidateState
@@ -109,6 +119,9 @@ data CandidateState = CandidateState
   , csLastApplied :: Index
     -- ^ index of highest log entry applied to state machine
   , csVotes :: NodeIds
+    -- ^ votes from other nodes in the raft network
+  , csLastLogEntryData :: (Index, Term)
+    -- ^ the index and term of the last log entry in the node's log
   } deriving (Show)
 
 data LeaderState = LeaderState
@@ -120,7 +133,48 @@ data LeaderState = LeaderState
     -- ^ for each server, index of the next log entry to send to that server
   , lsMatchIndex :: Map NodeId Index
     -- ^ for each server, index of highest log entry known to be replicated on server
+  , lsLastLogEntryData
+      :: ( Index
+         , Term
+         , Maybe ClientId -- ^ The only time this will be Nothing is at term 1
+         )
+    -- ^ the index, term, and client id of the last log entry in the node's log
   } deriving (Show)
+
+--------------------------------------------------------------------------------
+-- Helpers
+--------------------------------------------------------------------------------
+
+setLastLogEntryData :: NodeState ns -> Entries v -> NodeState ns
+setLastLogEntryData nodeState entries =
+  case entries of
+    Empty -> nodeState
+    _ :|> e ->
+      case nodeState of
+        NodeFollowerState fs ->
+          NodeFollowerState fs
+            { fsLastLogEntryData = (entryIndex e, entryTerm e) }
+        NodeCandidateState cs ->
+          NodeCandidateState cs
+            { csLastLogEntryData = (entryIndex e, entryTerm e) }
+        NodeLeaderState ls ->
+          NodeLeaderState ls
+            { lsLastLogEntryData = (entryIndex e, entryTerm e, Just (entryClientId e)) }
+
+getLastLogEntryData :: NodeState ns -> (Index, Term)
+getLastLogEntryData nodeState =
+  case nodeState of
+    NodeFollowerState fs -> fsLastLogEntryData fs
+    NodeCandidateState cs -> csLastLogEntryData cs
+    NodeLeaderState ls -> let (peTerm, peIndex, _) = lsLastLogEntryData ls
+                           in (peTerm, peIndex)
+
+getLastAppliedAndCommitIndex :: NodeState ns -> (Index, Index)
+getLastAppliedAndCommitIndex nodeState =
+  case nodeState of
+    NodeFollowerState fs -> (fsLastApplied fs, fsCommitIndex fs)
+    NodeCandidateState cs -> (csLastApplied cs, csCommitIndex cs)
+    NodeLeaderState ls -> (lsLastApplied ls, lsCommitIndex ls)
 
 isFollower :: NodeState s  -> Bool
 isFollower nodeState =

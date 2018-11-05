@@ -20,9 +20,9 @@ import Protolude hiding
   )
 
 import Control.Concurrent.Classy hiding (catch)
-import Control.Monad.STM.Class
-
 import Control.Monad.Catch
+
+import Data.Sequence ((><))
 import qualified Data.ByteString as BS
 import qualified Data.Map as Map
 import qualified Data.List as L
@@ -31,7 +31,6 @@ import qualified Data.Sequence as Seq
 import qualified Data.Serialize as S
 import qualified Data.Word8 as W8
 import qualified Network.Simple.TCP as NS
-import qualified Data.Text as T
 import Network.Simple.TCP
 import qualified Network.Socket as N
 import qualified Network.Socket.ByteString as NSB
@@ -44,6 +43,7 @@ import Text.Read
 import Raft
 import Raft.Config
 import Raft.Persistent
+import Raft.Log
 import Raft.Types
 import Raft.Event
 import Raft.RPC
@@ -76,80 +76,121 @@ instance StateMachine Store StoreCmd where
 -- Mock Network
 --------------------------------------------------------------------------------
 
-data NodeEnv m = NodeEnv
-  { nodeEnvStore :: TVar (STM m) Store
-  , nodeEnvPState :: TVar (STM m) (PersistentState StoreCmd)
+data NodeEnv = NodeEnv
+  { nodeEnvStore :: TVar (STM IO) Store
+  , nodeEnvPersistentState :: TVar (STM IO) PersistentState
+  , nodeEnvLog :: TVar (STM IO) (Entries StoreCmd)
   , nodeEnvPeers :: NodeIds
   , nodeEnvNodeId :: NodeId
   , nodeEnvSocket :: Socket
-  , nodeEnvSocketPeers :: TVar (STM m) (Map NodeId Socket)
-  , nodeEnvMsgQueue :: TChan (STM m) (RPCMessage StoreCmd)
-  , nodeEnvClientSockets :: TVar (STM m) (Map ClientId Socket)
-  , nodeEnvClientReqQueue :: TChan (STM m) (ClientRequest StoreCmd)
+  , nodeEnvSocketPeers :: TVar (STM IO) (Map NodeId Socket)
+  , nodeEnvMsgQueue :: TChan (STM IO) (RPCMessage StoreCmd)
+  , nodeEnvClientSockets :: TVar (STM IO) (Map ClientId Socket)
+  , nodeEnvClientReqQueue :: TChan (STM IO) (ClientRequest StoreCmd)
   }
 
-deriving instance MonadThrow m => MonadThrow (NodeEnvT m)
-deriving instance MonadCatch m => MonadCatch (NodeEnvT m)
-deriving instance MonadMask m => MonadMask (NodeEnvT m)
-deriving instance MonadConc m => MonadConc (NodeEnvT m)
+deriving instance MonadThrow NodeM
+deriving instance MonadCatch NodeM
+deriving instance MonadMask NodeM
+deriving instance MonadConc NodeM
 
-newtype NodeEnvT m a = NodeEnvT { unNodeEnvT :: ReaderT (NodeEnv m) m a }
-  deriving (Functor, Applicative, Monad, MonadIO, MonadReader (NodeEnv m), Alternative, MonadPlus)
+newtype NodeM a = NodeM { unNodeEnvT :: ReaderT NodeEnv IO a }
+  deriving (Functor, Applicative, Monad, MonadIO, MonadReader NodeEnv, Alternative, MonadPlus)
 
-runNodeEnvT :: NodeEnv m -> NodeEnvT m a -> m a
-runNodeEnvT testEnv = flip runReaderT testEnv . unNodeEnvT
+runNodeM :: NodeEnv -> NodeM a -> IO a
+runNodeM testEnv = flip runReaderT testEnv . unNodeEnvT
 
-instance MonadConc m => RaftPersist (NodeEnvT m) StoreCmd where
-  savePersistentState pstate' =
-    asks nodeEnvPState >>= atomically . flip writeTVar pstate'
-  loadPersistentState =
-    asks nodeEnvPState >>= atomically . readTVar
+newtype NodeEnvError = NodeEnvError Text
+  deriving (Show)
 
+instance Exception NodeEnvError
 
-instance (MonadIO m, MonadConc m) => RaftSendClient (NodeEnvT m) Store where
+instance RaftPersist NodeM where
+  type RaftPersistError NodeM = NodeEnvError
+  writePersistentState pstate' =
+    asks nodeEnvPersistentState >>=
+      fmap Right . atomically . flip writeTVar pstate'
+  readPersistentState =
+    asks nodeEnvPersistentState >>=
+      fmap Right . atomically . readTVar
+
+instance RaftSendClient NodeM Store where
   sendClient clientId@(ClientId nid) msg = do
-    liftIO $ print clientId
-    liftIO $ print msg
     selfNid <- asks nodeEnvNodeId
     let (cHost, cPort) = nidToHostPort (toS nid)
     connect cHost cPort $ \(cSock, _cSockAddr) -> do
       print ("Sending client read response from node: " ++ show selfNid ++ " to client: "++ show (cHost, cPort))
       send cSock (S.encode msg)
 
-instance (MonadConc m, MonadIO m) => RaftRecvClient (NodeEnvT m) StoreCmd where
+instance RaftRecvClient NodeM StoreCmd where
   receiveClient = do
     cReq <- atomically . readTChan =<< asks nodeEnvClientReqQueue
     selfNid <- asks nodeEnvNodeId
-    liftIO $ print $ "Received Client msg: " ++ show cReq ++ " on nodeId: " ++ show selfNid
+    print $ "Received Client msg: " ++ show cReq ++ " on nodeId: " ++ show selfNid
     pure cReq
 
-instance (MonadIO m, MonadConc m) => RaftSendRPC (NodeEnvT m) StoreCmd where
+instance RaftSendRPC NodeM StoreCmd where
   sendRPC nid msg = do
-      tPState <- asks nodeEnvPState
+      tPState <- asks nodeEnvPersistentState
       pState <- atomically $ readTVar tPState
-      liftIO $ print pState
       tNodeSocketPeers <- asks nodeEnvSocketPeers
       nodeSocketPeers <- atomically $ readTVar tNodeSocketPeers
-      sockM <- case Map.lookup nid nodeSocketPeers of
-        Nothing -> handle (handleFailure tNodeSocketPeers [nid] Nothing) $ liftIO $ do
-          (sock, _) <- connectSock host port
-          NS.send sock (S.encode $ RPCMessageEvent msg)
-          pure $ Just sock
-        Just sock -> handle (retryConnection tNodeSocketPeers nid (Just sock) msg) $ liftIO $ do
-          NS.send sock (S.encode $ RPCMessageEvent msg)
-          pure $ Just sock
+      sockM <-
+        liftIO $
+          case Map.lookup nid nodeSocketPeers of
+            Nothing -> handle (handleFailure tNodeSocketPeers [nid] Nothing) $ do
+              (sock, _) <- connectSock host port
+              NS.send sock (S.encode $ RPCMessageEvent msg)
+              pure $ Just sock
+            Just sock -> handle (retryConnection tNodeSocketPeers nid (Just sock) msg) $ do
+              NS.send sock (S.encode $ RPCMessageEvent msg)
+              pure $ Just sock
       atomically $ case sockM of
         Nothing -> pure ()
         Just sock -> writeTVar tNodeSocketPeers (Map.insert nid sock nodeSocketPeers)
     where
       (host, port) = nidToHostPort nid
 
+instance RaftWriteLog NodeM StoreCmd where
+  type RaftWriteLogError NodeM = NodeEnvError
+  writeLogEntries newEntries = do
+    asks nodeEnvLog >>= \logTVar -> do
+      fmap Right $ atomically $ do
+        modifyTVar logTVar (>< newEntries)
+
+instance RaftReadLog NodeM StoreCmd where
+  type RaftReadLogError NodeM = NodeEnvError
+  readLogEntry (Index idx) = do
+    log <- atomically . readTVar =<< asks nodeEnvLog
+    case log Seq.!? fromIntegral (if idx == 0 then 0 else idx - 1) of
+      Nothing -> pure (Right Nothing)
+      Just e -> pure (Right (Just e))
+  readLastLogEntry = do
+    log <- atomically . readTVar =<< asks nodeEnvLog
+    case log of
+      Seq.Empty -> pure (Right Nothing)
+      (_ Seq.:|> e) -> pure (Right (Just e))
+
+instance RaftDeleteLog NodeM where
+  type RaftDeleteLogError (NodeM) = NodeEnvError
+  deleteLogEntriesFrom idx = do
+    asks nodeEnvLog >>= \logTVar ->
+      atomically $ modifyTVar logTVar $
+        Seq.dropWhileR ((>= idx) . entryIndex)
+    pure (Right ())
+
 -- | Handles connections failures by first trying to reconnect
-retryConnection :: (MonadIO m, MonadConc m) => TVar (STM m) (Map NodeId Socket) -> NodeId -> Maybe Socket -> RPCMessage StoreCmd -> SomeException -> m (Maybe Socket)
+retryConnection
+  :: TVar (STM IO) (Map NodeId Socket)
+  -> NodeId
+  -> Maybe Socket
+  -> RPCMessage StoreCmd
+  -> SomeException
+  -> IO (Maybe Socket)
 retryConnection tNodeSocketPeers nid sockM msg e =  case sockM of
   Nothing -> pure Nothing
   Just sock ->
-    handle (handleFailure tNodeSocketPeers [nid] Nothing) $ liftIO $ do
+    handle (handleFailure tNodeSocketPeers [nid] Nothing) $ do
       print $ "Retrying connection to" ++ show nid
       (sock, _) <- connectSock host port
       print $ "Successful retry. New connection. Send RPC: " ++ show msg
@@ -159,17 +200,22 @@ retryConnection tNodeSocketPeers nid sockM msg e =  case sockM of
     (host, port) = nidToHostPort nid
 
 
-handleFailure :: (MonadIO m, MonadConc m) => TVar (STM m) (Map NodeId Socket) -> [NodeId] -> Maybe Socket -> SomeException -> m (Maybe Socket)
+handleFailure
+  :: TVar (STM IO) (Map NodeId Socket)
+  -> [NodeId]
+  -> Maybe Socket
+  -> SomeException
+  -> IO (Maybe Socket)
 handleFailure tNodeSocketPeers nids sockM e = case sockM of
   Nothing -> pure Nothing
   Just sock -> do
-    liftIO $ print $ "Failed to send RPC: " ++ show e
+    print $ "Failed to send RPC: " ++ show e
     nodeSocketPeers <- atomically $ readTVar tNodeSocketPeers
-    liftIO $ closeSock sock
+    closeSock sock
     atomically $ mapM_ (\nid -> writeTVar tNodeSocketPeers (Map.delete nid nodeSocketPeers)) nids
     pure Nothing
 
-instance (MonadIO m, MonadConc m) => RaftRecvRPC (NodeEnvT m) StoreCmd where
+instance RaftRecvRPC NodeM StoreCmd where
   receiveRPC = do
     msgQueue <- asks nodeEnvMsgQueue
     selfNid <- asks nodeEnvNodeId
@@ -313,15 +359,15 @@ main = do
           evalRepl (pure ">>> ") (unConsoleM . handleConsoleCmd) [] Nothing (Word completer) (pure ())
       (nid:nids) -> do
         let (host, port) = nidToHostPort (toS nid)
-        let peers = Set.fromList nids
+        let allNodeIds = Set.fromList (nid : nids)
         let nodeConfig = NodeConfig
               { configNodeId = toS nid
-              , configNodeIds = peers
+              , configNodeIds = allNodeIds
               , configElectionTimeout = (5000000, 15000000)
               , configHeartbeatTimeout = 1000000
               }
-        nodeEnv <- initNodeEnv host port peers
-        runNodeEnvT nodeEnv $ do
+        nodeEnv <- initNodeEnv host port allNodeIds
+        runNodeM nodeEnv $ do
           nodeSock <- asks nodeEnvSocket
           selfNid <- asks nodeEnvNodeId
           msgQueue <- asks nodeEnvMsgQueue
@@ -370,18 +416,20 @@ main = do
       listenSock sock 2048
       pure sock
 
-    initNodeEnv :: HostName -> ServiceName -> NodeIds -> IO (NodeEnv IO)
+    initNodeEnv :: HostName -> ServiceName -> NodeIds -> IO NodeEnv
     initNodeEnv host port nids = do
       nodeSocket <- newSock host port
       socketPeersTVar <- atomically (newTVar mempty)
       storeTVar <- atomically (newTVar mempty)
       pstateTVar <- atomically (newTVar initPersistentState)
+      logTVar <- atomically (newTVar Seq.Empty)
       msgQueue <- atomically newTChan
       clientSocketsTVar <- atomically (newTVar mempty)
       clientReqQueue <- atomically newTChan
       pure NodeEnv
         { nodeEnvStore = storeTVar
-        , nodeEnvPState = pstateTVar
+        , nodeEnvPersistentState = pstateTVar
+        , nodeEnvLog = logTVar
         , nodeEnvPeers = nids
         , nodeEnvNodeId = toS host <> ":" <> toS port
         , nodeEnvSocket = nodeSocket

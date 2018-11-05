@@ -12,7 +12,7 @@ import Protolude hiding (STM, killThread, ThreadId, threadDelay, myThreadId, ato
 
 import Control.Monad.Conc.Class
 import Control.Concurrent.Classy.STM
-import System.Random (StdGen, randomR, RandomGen, mkStdGen)
+import System.Random (StdGen, randomR, mkStdGen)
 
 import Numeric.Natural
 
@@ -29,16 +29,16 @@ waitTimer (Timer _ lock _ _) =
 
 -- | Starting a timer will only work if the timer is currently stopped
 startTimer :: MonadConc m => Timer m -> m ()
-startTimer timer@(Timer _ lock _ _) = do
-  timerLock <- atomically $ tryTakeTMVar lock
-  case timerLock of
+startTimer timer = do
+  lock <- atomically $ tryTakeTMVar (timerLock timer)
+  case lock of
     Nothing -> pure ()
     Just () -> spawnTimer timer
 
 resetTimer :: MonadConc m => Timer m -> m ()
-resetTimer timer@(Timer tid lock _ _) = do
+resetTimer timer = do
   -- Kill the old timer
-  mOldTid <- atomically $ tryTakeTMVar tid
+  mOldTid <- atomically $ tryTakeTMVar (timerThread timer)
   case mOldTid of
     Just oldTid -> killThread oldTid
     Nothing -> pure ()
@@ -48,20 +48,21 @@ resetTimer timer@(Timer tid lock _ _) = do
 -- | Spawn a timer thread. This function assumes that there are no other threads
 -- are using the timer
 spawnTimer :: MonadConc m => Timer m -> m ()
-spawnTimer (Timer tid lock trange@(tmin, tmax) tgen) = do
-  g <- atomically $ readTVar tgen
-  let (n, g') = randomR (toInteger tmin, toInteger tmax) g
-  atomically $ writeTVar tgen g'
+spawnTimer timer = do
+  g <- atomically $ readTVar (timerGen timer)
+  let (tmin, tmax) = timerRange timer
+      (n, g') = randomR (toInteger tmin, toInteger tmax) g
+  atomically $ writeTVar (timerGen timer) g'
   void $ fork $ do
     threadId <- myThreadId
     atomically $ do
-      _ <- tryTakeTMVar lock
-      _ <- tryTakeTMVar tid
-      void $ putTMVar tid threadId
+      _ <- tryTakeTMVar (timerLock timer)
+      _ <- tryTakeTMVar (timerThread timer)
+      void $ putTMVar (timerThread timer) threadId
     threadDelay (fromIntegral n)
     atomically $ do
-      _ <- tryTakeTMVar tid
-      putTMVar lock ()
+      _ <- tryTakeTMVar (timerThread timer)
+      putTMVar (timerLock timer) ()
 
 newTimer :: MonadConc m => Natural -> m (Timer m)
 newTimer timeout = newTimerRange 0 (timeout, timeout)
@@ -72,14 +73,3 @@ newTimerRange seed timeoutRange = do
   (timerThread, timerLock, timerGen) <-
     atomically $ (,,) <$> newEmptyTMVar <*> newTMVar () <*> newTVar (mkStdGen seed)
   pure $ Timer timerThread timerLock timeoutRange timerGen
-
---------------------------------------------------------------------------------
-
-natsToInteger :: (Natural, Natural) -> (Integer, Integer)
-natsToInteger (t1, t2) = (fromIntegral t1, fromIntegral t2)
-
-initialStdGen :: StdGen
-initialStdGen = mkStdGen 0
-
-rndTimeout :: (Natural, Natural) -> Natural
-rndTimeout t = fromIntegral $ fst $ randomR (natsToInteger t) initialStdGen

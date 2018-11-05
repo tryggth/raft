@@ -20,11 +20,8 @@ module Raft.Candidate (
 
 import Protolude
 
-import Control.Monad.Writer (tell)
-
 import qualified Data.Set as Set
 import qualified Data.Map as Map
-import qualified Data.Sequence as Seq
 
 import Raft.NodeState
 import Raft.RPC
@@ -33,7 +30,6 @@ import Raft.Event
 import Raft.Action
 import Raft.Persistent
 import Raft.Config
-import Raft.Log
 import Raft.Monad
 import Raft.Types
 
@@ -43,9 +39,9 @@ import Raft.Types
 
 handleAppendEntries :: RPCHandler 'Candidate sm (AppendEntries v) v
 handleAppendEntries (NodeCandidateState candidateState@CandidateState{..}) sender AppendEntries {..} = do
-  currentTerm <- psCurrentTerm <$> getPersistentState
+  currentTerm <- gets currentTerm
   if currentTerm <= aeTerm
-    then stepDown sender aeTerm csCommitIndex csLastApplied
+    then stepDown sender aeTerm csCommitIndex csLastApplied csLastLogEntryData
     else pure $ candidateResultState Noop candidateState
 
 -- | Candidates should not respond to 'AppendEntriesResponse' messages.
@@ -55,61 +51,55 @@ handleAppendEntriesResponse (NodeCandidateState candidateState) _sender _appendE
 
 handleRequestVote :: RPCHandler 'Candidate sm RequestVote v
 handleRequestVote ns@(NodeCandidateState candidateState@CandidateState{..}) sender requestVote@RequestVote{..} = do
-  currentTerm <- psCurrentTerm <$> getPersistentState
-  tellLogWithState ns (toS $ "Vote granted: " ++ show (rvTerm >= currentTerm))
-  if rvTerm >= currentTerm
-    then stepDown sender rvTerm csCommitIndex csLastApplied
-    else do
-      send sender (RequestVoteResponse currentTerm False)
-      pure $ candidateResultState Noop candidateState
+  currentTerm <- gets currentTerm
+  send sender $
+    SendRequestVoteResponseRPC $
+      RequestVoteResponse currentTerm False
+  pure $ candidateResultState Noop candidateState
 
 -- | Candidates should not respond to 'RequestVoteResponse' messages.
 handleRequestVoteResponse :: forall sm v. RPCHandler 'Candidate sm RequestVoteResponse v
 handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..}) sender requestVoteResp@RequestVoteResponse{..} = do
-  currentTerm <- psCurrentTerm <$> getPersistentState
-  cNodeIds <- asks configNodeIds
-  if  | rvrTerm > currentTerm -> stepDown sender rvrTerm csCommitIndex csLastApplied
-      | Set.member sender csVotes -> pure $ candidateResultState Noop candidateState
+  currentTerm <- gets currentTerm
+  if  | Set.member sender csVotes -> pure $ candidateResultState Noop candidateState
       | not rvrVoteGranted -> pure $ candidateResultState Noop candidateState
       | otherwise -> do
           let newCsVotes = Set.insert sender csVotes
+          cNodeIds <- asks (configNodeIds . nodeConfig)
           if not $ hasMajority cNodeIds newCsVotes
             then do
               let newCandidateState = candidateState { csVotes = newCsVotes }
               pure $ candidateResultState Noop newCandidateState
-            else leaderResultState BecomeLeader <$> becomeLeader csCommitIndex csLastApplied
+            else leaderResultState BecomeLeader <$> becomeLeader
 
   where
     hasMajority :: Set a -> Set b -> Bool
-    hasMajority totalNodeIds votes =
-      Set.size votes >= Set.size totalNodeIds `div` 2 + 1
+    hasMajority nids votes =
+      Set.size votes >= Set.size nids `div` 2 + 1
 
-    becomeLeader :: Index -> Index -> TransitionM sm v LeaderState
-    becomeLeader commitIndex lastApplied = do
+    becomeLeader :: TransitionM sm v LeaderState
+    becomeLeader = do
+      currentTerm <- gets currentTerm
       resetHeartbeatTimeout
-      selfNodeId <- asks configNodeId
-      currentTerm <- psCurrentTerm <$> getPersistentState
-      (logEntryIndex, logEntryTerm) <-
-        lastLogEntryIndexAndTerm . psLog <$> getPersistentState
-      broadcast AppendEntries { aeTerm = currentTerm
-                              , aeLeaderId = LeaderId selfNodeId
-                              , aePrevLogIndex = logEntryIndex
-                              , aePrevLogTerm = logEntryTerm
-                              , aeEntries = Seq.Empty :: Seq.Seq (Entry v)
-                              , aeLeaderCommit = index0
-                              }
-
-      cNodeIds <- asks configNodeIds
+      broadcast $ SendAppendEntriesRPC
+        AppendEntriesData
+          { aedTerm = currentTerm
+          , aedLeaderCommit = csCommitIndex
+          , aedEntriesSpec = NoEntries FromHeartbeat
+          }
+      cNodeIds <- asks (configNodeIds . nodeConfig)
+      let (lastLogEntryIdx, lastLogEntryTerm) = csLastLogEntryData
       pure LeaderState
-              { lsCommitIndex = commitIndex
-              , lsLastApplied = lastApplied
-              , lsNextIndex = Map.fromList $
-                  (,incrIndex logEntryIndex) <$> Set.toList cNodeIds
-              , lsMatchIndex = Map.fromList $
-                  (,index0) <$> Set.toList cNodeIds
-              -- ^ We use index0 as the new leader doesn't know yet what
-              -- the highest log has been seen by other nodes
-              }
+       { lsCommitIndex = csCommitIndex
+       , lsLastApplied = csLastApplied
+       , lsNextIndex = Map.fromList $
+           (,incrIndex lastLogEntryIdx) <$> Set.toList cNodeIds
+       , lsMatchIndex = Map.fromList $
+           (,index0) <$> Set.toList cNodeIds
+       -- ^ We use index0 as the new leader doesn't know yet what
+       -- the highest log has been seen by other nodes
+       , lsLastLogEntryData = (lastLogEntryIdx, lastLogEntryTerm, Nothing)
+       }
 
 handleTimeout :: TimeoutHandler 'Candidate sm v
 handleTimeout (NodeCandidateState candidateState@CandidateState{..}) timeout =
@@ -117,7 +107,7 @@ handleTimeout (NodeCandidateState candidateState@CandidateState{..}) timeout =
     HeartbeatTimeout -> pure $ candidateResultState Noop candidateState
     ElectionTimeout ->
       candidateResultState RestartElection <$>
-        updateElectionTimeoutCandidateState csCommitIndex csLastApplied
+        startElection csCommitIndex csLastApplied csLastLogEntryData
 
 -- | When candidates handle a client request, they respond with NoLeader, as the
 -- very reason they are candidate is because there is no leader. This is done
@@ -135,16 +125,21 @@ stepDown
   -> Term
   -> Index
   -> Index
+  -> (Index, Term)
   -> TransitionM a sm (ResultState 'Candidate v)
-stepDown sender term commitIndex lastApplied = do
-  send sender RequestVoteResponse
-      { rvrTerm = term
-      , rvrVoteGranted = True
-      }
+stepDown sender term commitIndex lastApplied lastLogEntryData = do
+  send sender $
+    SendRequestVoteResponseRPC $
+      RequestVoteResponse
+        { rvrTerm = term
+        , rvrVoteGranted = True
+        }
   resetElectionTimeout
   pure $ ResultState DiscoverLeader $
     NodeFollowerState FollowerState
       { fsCurrentLeader = CurrentLeader (LeaderId sender)
       , fsCommitIndex = commitIndex
       , fsLastApplied = lastApplied
+      , fsLastLogEntryData = lastLogEntryData
+      , fsEntryTermAtAEIndex = Nothing
       }

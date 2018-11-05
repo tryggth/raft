@@ -19,9 +19,8 @@ module Raft.Leader (
 import Protolude
 
 import qualified Data.Map as Map
-import Data.Sequence (Seq((:<|),Empty), (><))
+import Data.Sequence (Seq(Empty))
 import qualified Data.Sequence as Seq
-import Control.Monad.RWS
 
 import Raft.NodeState
 import Raft.RPC
@@ -29,8 +28,7 @@ import Raft.Action
 import Raft.Client
 import Raft.Event
 import Raft.Persistent
-import Raft.Config
-import Raft.Log
+import Raft.Log (Entry(..))
 import Raft.Monad
 import Raft.Types
 
@@ -50,26 +48,23 @@ handleAppendEntriesResponse ns@(NodeLeaderState ls) sender appendEntriesResp
   | not (aerSuccess appendEntriesResp) = do
       let newNextIndices = Map.adjust decrIndex sender (lsNextIndex ls)
           newLeaderState = ls { lsNextIndex = newNextIndices }
-      send sender =<< appendEntriesRPC Empty ls
+          Just newNextIndex = Map.lookup sender newNextIndices
+      aeData <- mkAppendEntriesData newLeaderState (FromIndex newNextIndex)
+      send sender (SendAppendEntriesRPC aeData)
       pure (leaderResultState Noop newLeaderState)
   | otherwise = do
-      mLastLogEntryIndex <-
-        fmap entryIndex . lastLogEntry . psLog <$> getPersistentState
-      newLeaderState <-
-        case mLastLogEntryIndex of
-          Nothing -> pure ls
-          Just lastLogEntryIndex -> do
-            let newNextIndices = Map.insert sender (lastLogEntryIndex + 1) (lsNextIndex ls)
-                newMatchIndices = Map.insert sender lastLogEntryIndex (lsMatchIndex ls)
-
-            pure ls { lsNextIndex = newNextIndices, lsMatchIndex = newMatchIndices }
+      let (lastLogEntryIdx,_,_) = lsLastLogEntryData ls
+          newNextIndices = Map.insert sender (lastLogEntryIdx + 1) (lsNextIndex ls)
+          newMatchIndices = Map.insert sender lastLogEntryIdx (lsMatchIndex ls)
+          newLeaderState = ls { lsNextIndex = newNextIndices, lsMatchIndex = newMatchIndices }
       -- Increment leader commit index if now a majority of followers have
       -- replicated an entry at a given term.
       newestLeaderState <- incrCommitIndex newLeaderState
       when (lsCommitIndex newestLeaderState > lsCommitIndex newLeaderState) $ do
-        Just clientId <- lastLogEntryClientId . psLog <$> getPersistentState
-        tellActions [RespondToClient clientId (ClientWriteResponse (ClientWriteResp (lsCommitIndex newestLeaderState)))]
-      tellLogWithState ns $ toS $ "HandleAppendEntriesResponse: " ++ show (aerSuccess appendEntriesResp)
+        let (_,_, mClientId) = lsLastLogEntryData newestLeaderState
+        case mClientId of
+          Nothing -> panic "Last log entry does not exist, but it should."
+          Just clientId -> tellActions [RespondToClient clientId (ClientWriteResponse (ClientWriteResp (lsCommitIndex newestLeaderState)))]
       pure (leaderResultState Noop newestLeaderState)
 
 -- | Leaders should not respond to 'RequestVote' messages.
@@ -89,7 +84,8 @@ handleTimeout (NodeLeaderState ls) timeout =
     ElectionTimeout -> pure (leaderResultState Noop ls)
     -- On a heartbeat timeout, broadcast append entries RPC to all peers
     HeartbeatTimeout -> do
-      uniqueBroadcast =<< appendEntriesRPCs ls
+      aeData <- mkAppendEntriesData ls (NoEntries FromHeartbeat)
+      broadcast (SendAppendEntriesRPC aeData)
       pure (leaderResultState SendHeartbeat ls)
 
 -- | The leader handles all client requests, responding with the current state
@@ -100,15 +96,15 @@ handleClientRequest (NodeLeaderState ls) (ClientRequest clientId cr) = do
     case cr of
       ClientReadReq -> respondClientRead clientId
       ClientWriteReq v -> do
-        idx <- nextLogEntryIndex . psLog <$> getPersistentState
-        broadcast =<< mkAppendEntriesRPC =<< mkNewLogEntry v idx
+        let (lastLogEntryIdx,_,_) = lsLastLogEntryData ls
+        newLogEntry <- mkNewLogEntry v (lastLogEntryIdx + 1)
+        appendLogEntries (Empty Seq.|> newLogEntry)
+        aeData <- mkAppendEntriesData ls (FromClientReq newLogEntry)
+        broadcast (SendAppendEntriesRPC aeData)
     pure (leaderResultState Noop ls)
   where
-    mkAppendEntriesRPC entry =
-      appendEntriesRPC (entry :<| Empty) ls
-
     mkNewLogEntry v idx = do
-      currentTerm <- psCurrentTerm <$> getPersistentState
+      currentTerm <- currentTerm <$> get
       pure $ Entry
         { entryIndex = idx
         , entryTerm = currentTerm
@@ -122,44 +118,41 @@ handleClientRequest (NodeLeaderState ls) (ClientRequest clientId cr) = do
 -- matchIndex[i] >= N, and log[N].term == currentTerm: set commitIndex = N
 incrCommitIndex :: Show v => LeaderState -> TransitionM sm v LeaderState
 incrCommitIndex leaderState@LeaderState{..} = do
-    mlatestEntry <- lastLogEntry . psLog <$> getPersistentState
-    currentTerm <- psCurrentTerm <$> getPersistentState
-    case mlatestEntry of
-      Nothing -> pure leaderState
-      Just latestEntry
-        | majorityGreaterThan n && (entryTerm latestEntry == currentTerm) ->
-            pure leaderState { lsCommitIndex = n }
-        | otherwise -> pure leaderState
+    tellLogWithState (NodeLeaderState leaderState) $
+      "Checking to increment commit index..."
+    let (_, lastLogEntryTerm, _) = lsLastLogEntryData
+    currentTerm <- currentTerm <$> get
+    tellLogWithState (NodeLeaderState leaderState) $
+      "Majority greater than " <> show n <> ": " <> show (majorityGreaterThanN)
+    if majorityGreaterThanN && (lastLogEntryTerm == currentTerm)
+      then do
+        tellLogWithState (NodeLeaderState leaderState) $
+          "Incrementing commit index to: " <> show n
+        pure leaderState { lsCommitIndex = n }
+      else do
+        tellLogWithState (NodeLeaderState leaderState) $
+          "Not incrementing commit index."
+        pure leaderState
   where
     n = lsCommitIndex + 1
 
-    majorityGreaterThan m =
-      (>=) (Map.size (Map.filter (>= m) lsNextIndex))
-           ((Map.size lsNextIndex) `div` 2 + 1)
-
--- | Construct bespoke AppendEntriesRPC values for each follower, with respect
--- to their current 'nextIndex' stored in the LeaderState.
-appendEntriesRPCs :: Show v => LeaderState -> TransitionM sm v (Map NodeId (AppendEntries v))
-appendEntriesRPCs leaderState@LeaderState{..} =
-  forM lsNextIndex $ \nextIndex -> do
-    logEntries <- flip takeLogEntriesUntil nextIndex . psLog <$> getPersistentState
-    case logEntries of
-      Empty -> appendEntriesRPC Empty leaderState
-      entries -> appendEntriesRPC entries leaderState
+    -- Note, the majority in this case includes the leader itself, thus when
+    -- calculating the number of nodes that need a match index > N, we only need
+    -- to divide the size of the map by 2 instead of also adding one.
+    majorityGreaterThanN =
+      (>=) (Map.size (Map.filter (>= n) lsMatchIndex))
+           ((Map.size lsMatchIndex) `div` 2)
 
 -- | Construct an AppendEntriesRPC given log entries and a leader state.
-appendEntriesRPC :: Show v => Entries v -> LeaderState -> TransitionM sm v (AppendEntries v)
-appendEntriesRPC entries leaderState = do
-  term <- psCurrentTerm <$> getPersistentState
-  leaderId <- asks configNodeId
-  (prevLogIndex, prevLogTerm) <-
-    lastLogEntryIndexAndTerm . psLog <$> getPersistentState
-  appendNewLogEntries entries
-  pure AppendEntries
-    { aeTerm = term
-    , aeLeaderId = LeaderId leaderId
-    , aePrevLogIndex = prevLogIndex
-    , aePrevLogTerm = prevLogTerm
-    , aeEntries = entries
-    , aeLeaderCommit = lsCommitIndex leaderState
+mkAppendEntriesData
+  :: Show v
+  => LeaderState
+  -> EntriesSpec v
+  -> TransitionM sm v (AppendEntriesData v)
+mkAppendEntriesData ls entriesSpec = do
+  currentTerm <- gets currentTerm
+  pure AppendEntriesData
+    { aedTerm = currentTerm
+    , aedLeaderCommit = lsCommitIndex ls
+    , aedEntriesSpec = entriesSpec
     }

@@ -46,6 +46,25 @@ rpcTerm = \case
   RequestVoteRPC rv -> rvTerm rv
   RequestVoteResponseRPC rvr -> rvrTerm rvr
 
+data NoEntriesSpec
+  = FromInconsistency
+  | FromHeartbeat
+  deriving (Show)
+
+data EntriesSpec v
+  = FromIndex Index
+  | FromClientReq (Entry v)
+  | NoEntries NoEntriesSpec
+  deriving (Show)
+
+-- | The data used to construct an AppendEntries value, snapshotted from the
+-- node state at the time the AppendEntries val should be created.
+data AppendEntriesData v = AppendEntriesData
+  { aedTerm :: Term
+  , aedLeaderCommit :: Index
+  , aedEntriesSpec :: EntriesSpec v
+  } deriving (Show)
+
 data AppendEntries v = AppendEntries
   { aeTerm :: Term
     -- ^ leader's term
@@ -55,7 +74,7 @@ data AppendEntries v = AppendEntries
     -- ^ index of log entry immediately preceding new ones
   , aePrevLogTerm :: Term
     -- ^ term of aePrevLogIndex entry
-  , aeEntries :: Seq (Entry v)
+  , aeEntries :: Entries v
     -- ^ log entries to store (empty for heartbeat)
   , aeLeaderCommit :: Index
     -- ^ leader's commit index
