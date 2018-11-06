@@ -79,6 +79,7 @@ type ClientResps = Map ClientId (Seq (ClientResponse Store))
 
 data TestState = TestState
   { testNodeIds :: NodeIds
+  , testNodeLogs :: Map NodeId (Entries StoreCmd)
   , testNodeSMs :: Map NodeId Store
   , testNodeRaftStates :: Map NodeId (RaftNodeState StoreCmd)
   , testNodePersistentStates :: Map NodeId PersistentState
@@ -94,6 +95,7 @@ runScenario scenario = do
   let initPersistentState = PersistentState term0 Nothing
   let initTestState = TestState
                     { testNodeIds = nodeIds
+                    , testNodeLogs = Map.fromList $ (, mempty) <$> Set.toList nodeIds
                     , testNodeSMs = Map.fromList $ (, mempty) <$> Set.toList nodeIds
                     , testNodeRaftStates = Map.fromList $ (, initRaftNodeState) <$> Set.toList nodeIds
                     , testNodePersistentStates = Map.fromList $ (, initPersistentState) <$> Set.toList nodeIds
@@ -103,15 +105,22 @@ runScenario scenario = do
 
   evalStateT scenario initTestState
 
-testUpdatePersistentState :: NodeId -> PersistentState -> Scenario ()
-testUpdatePersistentState nodeId persistentState
+updateStateMachine :: NodeId -> Store -> Scenario ()
+updateStateMachine nodeId sm
+  = modify $ \testState@TestState{..}
+      -> testState
+          { testNodeSMs = Map.insert nodeId sm testNodeSMs
+          }
+
+updatePersistentState :: NodeId -> PersistentState -> Scenario ()
+updatePersistentState nodeId persistentState
   = modify $ \testState@TestState{..}
       -> testState
           { testNodePersistentStates = Map.insert nodeId persistentState testNodePersistentStates
           }
 
-testUpdateRaftNodeState :: NodeId -> RaftNodeState StoreCmd -> Scenario ()
-testUpdateRaftNodeState nodeId raftState
+updateRaftNodeState :: NodeId -> RaftNodeState StoreCmd -> Scenario ()
+updateRaftNodeState nodeId raftState
   = modify $ \testState@TestState{..}
       -> testState
           { testNodeRaftStates = Map.insert nodeId raftState testNodeRaftStates
@@ -142,37 +151,60 @@ lookupLastClientResp clientId cResps = r
   where
     (_ :|> r) = lookupClientResps clientId cResps
 
---instance RaftSendClient (StateT TestState IO) Store where
 sendClient :: ClientId -> ClientResponse Store -> Scenario ()
 sendClient clientId resp = do
   cResps <- gets testClientResps
   let resps = lookupClientResps clientId cResps
   modify (\st -> st { testClientResps = Map.insert clientId (resps |> resp) (testClientResps st) })
 
-----------------------------------------
--- Log instances
-----------------------------------------
+-------------------
+-- Log instances --
+-------------------
 
 newtype NodeEnvError = NodeEnvError Text
   deriving (Show)
 
 instance Exception NodeEnvError
-instance RaftWriteLog IO StoreCmd where
-  type RaftWriteLogError IO = NodeEnvError
-  writeLogEntries newEntries = notImplemented
 
-instance RaftReadLog IO StoreCmd where
-  type RaftReadLogError IO = NodeEnvError
-  readLogEntry (Index idx) = notImplemented
-  readLastLogEntry = notImplemented
+type RTLog = ReaderT NodeId (StateT TestState IO)
 
-instance RaftDeleteLog IO where
-  type RaftDeleteLogError IO = NodeEnvError
-  deleteLogEntriesFrom idx = notImplemented
+instance RaftWriteLog RTLog StoreCmd where
+  type RaftWriteLogError RTLog = NodeEnvError
+  writeLogEntries newEntries = do
+    nid <- ask
+    Just log <- Map.lookup nid <$> gets testNodeLogs
+    modify $ \testState@TestState{..} ->
+      testState { testNodeLogs = Map.insert nid (log Seq.>< newEntries) testNodeLogs }
+    pure $ pure ()
 
-----------------------------------------
--- Handle actions and events
-----------------------------------------
+
+instance RaftReadLog RTLog StoreCmd where
+  type RaftReadLogError RTLog = NodeEnvError
+  readLogEntry (Index idx) = do
+    nid <- ask
+    Just log <- Map.lookup nid <$> gets testNodeLogs
+    case log Seq.!? fromIntegral (if idx == 0 then 0 else idx - 1) of
+      Nothing -> pure (Right Nothing)
+      Just e -> pure (Right (Just e))
+  readLastLogEntry = do
+    nid <- ask
+    Just log <- Map.lookup nid <$> gets testNodeLogs
+    case log of
+      Seq.Empty -> pure (Right Nothing)
+      (_ Seq.:|> e) -> pure (Right (Just e))
+
+instance RaftDeleteLog RTLog where
+  type RaftDeleteLogError RTLog = NodeEnvError
+  deleteLogEntriesFrom idx = do
+    nid <- ask
+    Just log <- Map.lookup nid <$> gets testNodeLogs
+    modify $ \testState@TestState{..} ->
+      testState { testNodeLogs = Map.insert nid (Seq.dropWhileR ((>= idx) . entryIndex) log) testNodeLogs }
+    pure $ pure ()
+
+-------------------------------
+-- Handle actions and events --
+-------------------------------
 
 testHandleLogs :: Maybe [NodeId] -> (LogMsg -> IO ()) -> LogMsgs -> Scenario ()
 testHandleLogs nIdsM f logs = liftIO $
@@ -197,8 +229,7 @@ testHandleAction sender action =
     RespondToClient clientId resp -> sendClient clientId resp
     ResetTimeoutTimer _ -> noop
     AppendLogEntries entries -> do
-      liftIO $ print $ "Action - AppendLogEntries" ++ show entries
-      -- TODO: Choose the right node to update
+      runReaderT (updateLog entries) sender
       modify $ \testState@TestState{..}
         -> case Map.lookup sender testNodeRaftStates of
             Nothing -> panic "No NodeState"
@@ -207,90 +238,106 @@ testHandleAction sender action =
               }
     where
       noop = pure ()
-        --liftIO $ print $ "Action noop: " ++ show action
+
+      mkRPCfromSendRPCAction
+        :: NodeId -> SendRPCAction StoreCmd -> Scenario (RPCMessage StoreCmd)
+      mkRPCfromSendRPCAction nId sendRPCAction = do
+        sc <- get
+        (nodeConfig, _, raftState@(RaftNodeState ns), _) <- getNodeInfo nId
+        RPCMessage (configNodeId nodeConfig) <$>
+          case sendRPCAction of
+            SendAppendEntriesRPC aeData -> do
+              (entries, prevLogIndex, prevLogTerm) <-
+                case aedEntriesSpec aeData of
+                  FromIndex idx -> do
+                    eLogEntries <- runReaderT (readLogEntriesFrom (decrIndex idx)) nId
+                    case eLogEntries of
+                      Left err -> throw err
+                      Right log ->
+                        case log of
+                          pe :<| entries@(e :<| _)
+                            | idx == 1 -> pure (log, index0, term0)
+                            | otherwise -> pure (entries, entryIndex pe, entryTerm pe)
+                          _ -> pure (log, index0, term0)
+                  FromClientReq e ->
+                    if entryIndex e /= Index 1
+                      then do
+                        eLogEntry <- runReaderT (readLogEntry (decrIndex (entryIndex e))) nId
+                        case eLogEntry of
+                          Left err -> throw err
+                          Right Nothing -> pure (Seq.singleton e, index0, term0)
+                          Right (Just (prevEntry :: Entry StoreCmd)) ->
+                            pure (Seq.singleton e, entryIndex prevEntry, entryTerm prevEntry)
+                      else pure (Seq.singleton e, index0, term0)
+                  NoEntries _ -> do
+                    let (lastLogIndex, lastLogTerm) = getLastLogEntryData ns
+                    pure (Empty, lastLogIndex, lastLogTerm)
+              let leaderId = LeaderId (configNodeId nodeConfig)
+              pure . toRPC $
+                AppendEntries
+                  { aeTerm = aedTerm aeData
+                  , aeLeaderId = leaderId
+                  , aePrevLogIndex = prevLogIndex
+                  , aePrevLogTerm = prevLogTerm
+                  , aeEntries = entries
+                  , aeLeaderCommit = aedLeaderCommit aeData
+                  }
+            SendAppendEntriesResponseRPC aer -> pure (toRPC aer)
+            SendRequestVoteRPC rv -> pure (toRPC rv)
+            SendRequestVoteResponseRPC rvr -> pure (toRPC rvr)
 
 testHandleEvent :: NodeId -> Event StoreCmd -> Scenario ()
 testHandleEvent nodeId event = do
-  sms <- gets testNodeSMs
-  case Map.lookup nodeId sms of
-    Nothing -> panic $ toS $ "Error accessing state machine of node: " ++ show nodeId
-    Just sm -> do
-      --liftIO $ printIfNodes [node0] nodeId ("Received event: " ++ show event)
-      (nodeConfig, store, raftState, persistentState) <- getNodeInfo nodeId
-      --let transitionSt = TransitionState persistentState store
-      let transitionEnv = TransitionEnv nodeConfig store
-      let (newRaftState, newPersistentState, transitionW) = handleEvent raftState transitionEnv persistentState event
-      testUpdatePersistentState nodeId newPersistentState
-      testUpdateRaftNodeState nodeId newRaftState
-      --liftIO $ printIfNodes [node0] nodeId ("Actions to perform: " ++ show (twActions transitionW))
-      testHandleActions nodeId (twActions transitionW)
-      testHandleLogs (Just [node0]) print (twLogs transitionW)
+  (nodeConfig, sm, raftState, persistentState) <- getNodeInfo nodeId
+  let transitionEnv = TransitionEnv nodeConfig sm
+  let (newRaftState, newPersistentState, transitionW) = handleEvent raftState transitionEnv persistentState event
+  updatePersistentState nodeId newPersistentState
+  updateRaftNodeState nodeId newRaftState
+  testHandleActions nodeId (twActions transitionW)
+  testHandleLogs Nothing (const $ pure ()) (twLogs transitionW)
+  applyLogEntries nodeId sm
+  where
+    applyLogEntries
+      :: NodeId
+      -> Store
+      -> Scenario ()
+    applyLogEntries nId stateMachine  = do
+        (_, _, raftNodeState@(RaftNodeState nodeState), _) <- getNodeInfo nId
+        let lastAppliedIndex = lastApplied nodeState
+        when (commitIndex nodeState > lastAppliedIndex) $ do
+          let resNodeState = incrLastApplied nodeState
+          modify $ \testState@TestState{..} -> testState {
+              testNodeRaftStates = Map.insert nId (RaftNodeState resNodeState) testNodeRaftStates }
+          let newLastAppliedIndex = lastApplied resNodeState
+          eLogEntry <- runReaderT (readLogEntry newLastAppliedIndex) nId
+          case eLogEntry of
+            Left err -> throw err
+            Right Nothing -> panic "No log entry at 'newLastAppliedIndex'"
+            Right (Just logEntry) -> do
+              let newStateMachine = applyCommittedLogEntry stateMachine (entryValue logEntry)
+              updateStateMachine nId newStateMachine
+              applyLogEntries nId newStateMachine
 
-mkRPCfromSendRPCAction
-  :: NodeId -> SendRPCAction StoreCmd -> Scenario (RPCMessage StoreCmd)
-mkRPCfromSendRPCAction nId sendRPCAction = do
-  (nodeConfig, _, raftState@(RaftNodeState ns), _) <- getNodeInfo nId
-  RPCMessage (configNodeId nodeConfig) <$>
-    case sendRPCAction of
-      SendAppendEntriesRPC aeData -> do
-        (entries, prevLogIndex, prevLogTerm) <-
-          case aedEntriesSpec aeData of
-            FromIndex idx -> do
-              eLogEntries <- lift (readLogEntriesFrom (decrIndex idx))
-              case eLogEntries of
-                Left err -> throw err
-                Right log ->
-                  case log of
-                    pe :<| entries@(e :<| _)
-                      | idx == 1 -> pure (log, index0, term0)
-                      | otherwise -> pure (entries, entryIndex pe, entryTerm pe)
-                    _ -> pure (log, index0, term0)
-            FromClientReq e ->
-              if entryIndex e /= Index 1
-                then do
-                  eLogEntry <- lift $ readLogEntry (decrIndex (entryIndex e))
-                  case eLogEntry of
-                    Left err -> throw err
-                    Right Nothing -> pure (Seq.singleton e, index0, term0)
-                    Right (Just (prevEntry :: Entry StoreCmd)) ->
-                      pure (Seq.singleton e, entryIndex prevEntry, entryTerm prevEntry)
-                else pure (Seq.singleton e, index0, term0)
-            NoEntries _ -> do
-              let (lastLogIndex, lastLogTerm) = getLastLogEntryData ns
-              pure (Empty, lastLogIndex, lastLogTerm)
-        let leaderId = LeaderId (configNodeId nodeConfig)
-        pure . toRPC $
-          AppendEntries
-            { aeTerm = aedTerm aeData
-            , aeLeaderId = leaderId
-            , aePrevLogIndex = prevLogIndex
-            , aePrevLogTerm = prevLogTerm
-            , aeEntries = entries
-            , aeLeaderCommit = aedLeaderCommit aeData
-            }
-      SendAppendEntriesResponseRPC aer -> pure (toRPC aer)
-      SendRequestVoteRPC rv -> pure (toRPC rv)
-      SendRequestVoteResponseRPC rvr -> pure (toRPC rvr)
+      where
+        incrLastApplied :: NodeState ns -> NodeState ns
+        incrLastApplied nodeState =
+          case nodeState of
+            NodeFollowerState fs ->
+              let lastApplied' = incrIndex (fsLastApplied fs)
+               in NodeFollowerState $ fs { fsLastApplied = lastApplied' }
+            NodeCandidateState cs ->
+              let lastApplied' = incrIndex (csLastApplied cs)
+               in  NodeCandidateState $ cs { csLastApplied = lastApplied' }
+            NodeLeaderState ls ->
+              let lastApplied' = incrIndex (lsLastApplied ls)
+               in NodeLeaderState $ ls { lsLastApplied = lastApplied' }
 
-----------------------------
--- Test raft events
-----------------------------
+        lastApplied :: NodeState ns -> Index
+        lastApplied = fst . getLastAppliedAndCommitIndex
 
-testInitLeader :: NodeId -> Scenario ()
-testInitLeader nId =
-  testHandleEvent nId (TimeoutEvent ElectionTimeout)
+        commitIndex :: NodeState ns -> Index
+        commitIndex = snd . getLastAppliedAndCommitIndex
 
-testClientReadRequest :: NodeId -> Scenario ()
-testClientReadRequest nId =
-  testHandleEvent nId (MessageEvent
-        (ClientRequestEvent
-          (ClientRequest client0 ClientReadReq)))
-
-testClientWriteRequest :: StoreCmd -> NodeId -> Scenario ()
-testClientWriteRequest cmd nId =
-  testHandleEvent nId (MessageEvent
-        (ClientRequestEvent
-          (ClientRequest client0 (ClientWriteReq cmd))))
 
 testHeartbeat :: NodeId -> Scenario ()
 testHeartbeat sender = do
@@ -316,12 +363,32 @@ testHeartbeat sender = do
       (RaftNodeState (NodeLeaderState leaderState)) -> leaderState
       _ -> panic "Node must be a leader to access its leader state"
 
------------------------------------------
--- Unit tests
------------------------------------------
+
+----------------------
+-- Test raft events --
+----------------------
+
+testInitLeader :: NodeId -> Scenario ()
+testInitLeader nId =
+  testHandleEvent nId (TimeoutEvent ElectionTimeout)
+
+testClientReadRequest :: NodeId -> Scenario ()
+testClientReadRequest nId =
+  testHandleEvent nId (MessageEvent
+        (ClientRequestEvent
+          (ClientRequest client0 ClientReadReq)))
+
+testClientWriteRequest :: StoreCmd -> NodeId -> Scenario ()
+testClientWriteRequest cmd nId =
+  testHandleEvent nId (MessageEvent
+        (ClientRequestEvent
+          (ClientRequest client0 (ClientWriteReq cmd))))
+
+----------------
+-- Unit tests --
+----------------
 
 -- When the protocol starts, every node is a follower
--- One of these followers must become a leader
 unit_init_protocol :: IO ()
 unit_init_protocol = runScenario $ do
   -- Node 0 becomes the leader
@@ -329,22 +396,61 @@ unit_init_protocol = runScenario $ do
 
   raftStates <- gets testNodeRaftStates
 
-  -- Test that node0 is a leader and the other nodes are followers
+  -- Node0 has become leader and other nodes are followers
   liftIO $ assertLeader raftStates [(node0, NoLeader), (node1, CurrentLeader (LeaderId node0)), (node2, CurrentLeader (LeaderId node0))]
   liftIO $ assertNodeState raftStates [(node0, isRaftLeader), (node1, isRaftFollower), (node2, isRaftFollower)]
 
-unit_append_commit_log_index :: IO ()
-unit_append_commit_log_index = runScenario $ do
-  ---------------------------------
+unit_append_entries_client_request :: IO ()
+unit_append_entries_client_request = runScenario $ do
+
   testInitLeader node0
   testClientWriteRequest testSetCmd node0
-  ---------------------------------
 
-  persistentStates0 <- gets testNodePersistentStates
   raftStates0 <- gets testNodeRaftStates
   sms0 <- gets testNodeSMs
+  logs0 <- gets testNodeLogs
 
+  liftIO $ assertPersistedLogs logs0 [(node0, 1), (node1, 1), (node2, 1)]
   liftIO $ assertCommittedLogIndex raftStates0 [(node0, Index 1), (node1, Index 0), (node2, Index 0)]
+  liftIO $ assertAppliedLogIndex raftStates0 [(node0, Index 1), (node1, Index 0), (node2, Index 0)]
+  liftIO $ assertSMs sms0 [(node0, Map.fromList [(testVar, testInitVal)]), (node1, mempty), (node2, mempty)]
+
+  ---------------------------- HEARTBEAT 1 ------------------------------
+  -- After leader heartbeats, followers commit and apply leader's entries
+  testHeartbeat node0
+  raftStates1 <- gets testNodeRaftStates
+  sms1 <- gets testNodeSMs
+  logs1 <- gets testNodeLogs
+
+  liftIO $ assertPersistedLogs logs1 [(node0, 1), (node1, 1), (node2, 1)]
+  liftIO $ assertCommittedLogIndex raftStates1 [(node0, Index 1), (node1, Index 1), (node2, Index 1)]
+  liftIO $ assertAppliedLogIndex raftStates1 [(node0, Index 1), (node1, Index 1), (node2, Index 1)]
+  liftIO $ assertSMs sms1 [(node0, Map.fromList [(testVar, testInitVal)]), (node1, Map.fromList [(testVar, testInitVal)]), (node2, Map.fromList [(testVar, testInitVal)])]
+
+
+
+unit_incr_value :: IO ()
+unit_incr_value = runScenario $ do
+  testInitLeader node0
+  testClientWriteRequest testSetCmd node0
+  testClientWriteRequest testIncrCmd node0
+
+  testHeartbeat node0
+
+  sms <- gets testNodeSMs
+  liftIO $ assertSMs sms [(node0, Map.fromList [(testVar, succ testInitVal)]), (node1, Map.fromList [(testVar, succ testInitVal)]), (node2, Map.fromList [(testVar, succ testInitVal)])]
+
+
+unit_mult_incr_value :: IO ()
+unit_mult_incr_value = runScenario $ do
+  testInitLeader node0
+  testClientWriteRequest testSetCmd node0
+  let reps = 10
+  replicateM_ (fromIntegral 10) (testClientWriteRequest testIncrCmd node0)
+  testHeartbeat node0
+
+  sms <- gets testNodeSMs
+  liftIO $ assertSMs sms [(node0, Map.fromList [(testVar, testInitVal + reps)]), (node1, Map.fromList [(testVar, testInitVal + reps)]), (node2, Map.fromList [(testVar, testInitVal + reps)])]
 
 unit_client_req_no_leader :: IO ()
 unit_client_req_no_leader = runScenario $ do
@@ -367,9 +473,9 @@ unit_client_read_response = runScenario $ do
   testClientWriteRequest testSetCmd node0
   testClientReadRequest node0
   cResps <- gets testClientResps
-  case lookupLastClientResp client0 cResps of
-    ClientReadResponse (ClientReadResp store) -> pure ()
-    _ -> panic "A client should receive a read response"
+  let ClientReadResponse (ClientReadResp store) = lookupLastClientResp client0 cResps
+  liftIO $ HUnit.assertBool "A client should receive the current state of the store"
+    (store == Map.fromList [(testVar, testInitVal)])
 
 unit_client_write_response :: IO ()
 unit_client_write_response = runScenario $ do
@@ -390,9 +496,9 @@ unit_new_leader = runScenario $ do
   liftIO $ assertNodeState raftStates [(node0, isRaftFollower), (node1, isRaftLeader), (node2, isRaftFollower)]
   liftIO $ assertLeader raftStates [(node0, CurrentLeader (LeaderId node1)), (node1, NoLeader), (node2, CurrentLeader (LeaderId node1))]
 
---------------------------------------------
--- Assert utils
---------------------------------------------
+------------------
+-- Assert utils --
+------------------
 
 assertNodeState :: Map NodeId (RaftNodeState v) -> [(NodeId, RaftNodeState v -> Bool)] -> IO ()
 assertNodeState raftNodeStates =
@@ -413,6 +519,11 @@ assertAppliedLogIndex :: Map NodeId (RaftNodeState v) -> [(NodeId, Index)] -> IO
 assertAppliedLogIndex raftNodeStates =
   mapM_ (\(nId, idx) -> HUnit.assertBool (show nId ++ " should have " ++ show idx ++ " as its last applied index")
     (maybe False ((== idx) . getLastAppliedLog) (Map.lookup nId raftNodeStates)))
+
+assertPersistedLogs :: Map NodeId (Entries v) -> [(NodeId, Int)] -> IO ()
+assertPersistedLogs persistedLogs =
+  mapM_ (\(nId, len) -> HUnit.assertBool (show nId ++ " should have appended " ++ show len ++ " logs")
+    (maybe False ((== len) . Seq.length) (Map.lookup nId persistedLogs)))
 
 assertSMs :: Map NodeId Store -> [(NodeId, Store)] -> IO ()
 assertSMs sms =
