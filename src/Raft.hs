@@ -10,7 +10,102 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Raft where
+module Raft
+  ( RaftSendRPC(..)
+  , RaftRecvRPC(..)
+  , RaftSendClient(..)
+  , RaftRecvClient(..)
+  , RaftPersist(..)
+
+  , runRaftNode
+
+  -- Action
+  , Action(..)
+  , SendRPCAction(..)
+
+  -- Client
+  , ClientRequest(..)
+  , ClientReq(..)
+  , ClientResponse(..)
+  , ClientReadResp(..)
+  , ClientWriteResp(..)
+  , ClientRedirResp(..)
+
+  -- Config
+  , NodeConfig(..)
+
+  -- Event
+  , Timeout(..)
+  , MessageEvent(..)
+  , Event(..)
+
+  -- Handle
+  , handleEvent
+
+  -- Log
+  , Entry(..)
+  , AppendEntryError(..)
+  , Entries
+  , RaftWriteLog(..)
+  , RaftDeleteLog(..)
+  , RaftReadLog (..)
+  , RaftLog
+  , RaftLogError(..)
+  , updateLog
+
+  -- Monad
+  , StateMachine(..)
+  , LogMsg(..)
+  , LogMsgs
+  , TransitionEnv(..)
+  , TransitionWriter(..)
+  , TransitionM(..)
+
+  -- NodeState
+  , Mode(..)
+  , initRaftNodeState
+  , RaftNodeState(..)
+  , NodeState(..)
+  , CurrentLeader(..)
+  , FollowerState(..)
+  , CandidateState(..)
+  , LeaderState(..)
+  , isFollower
+  , isCandidate
+  , isLeader
+  , setLastLogEntryData
+  , getLastLogEntryData
+  , getLastAppliedAndCommitIndex
+
+  -- Persistent
+  , PersistentState(..)
+  , initPersistentState
+
+  -- Types
+  , NodeId
+  , NodeIds
+  , ClientId(..)
+  , LeaderId(..)
+  , Term(..)
+  , term0
+  , incrTerm
+  , Index(..)
+  , index0
+  , incrIndex
+  , decrIndex
+
+  -- RPC
+  , RPC(..)
+  , RPCType(..)
+  , RPCMessage(..)
+  , AppendEntries(..)
+  , AppendEntriesResponse(..)
+  , RequestVote(..)
+  , RequestVoteResponse(..)
+  , EntriesSpec(..)
+  , NoEntriesSpec(..)
+  , AppendEntriesData(..)
+  ) where
 
 import Protolude hiding (STM, TChan, newTChan, readTChan, writeTChan, atomically)
 
