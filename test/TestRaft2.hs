@@ -11,7 +11,7 @@
 
 module TestRaft2 where
 
-import Protolude hiding (STM, TChan, newTChan, readTChan, writeTChan, atomically)
+import Protolude hiding (STM, TChan, newTChan, readTChan, writeTChan, atomically, killThread, ThreadId)
 
 import Data.Sequence (Seq(..), (><), dropWhileR, (!?))
 import qualified Data.Map as Map
@@ -21,8 +21,12 @@ import Numeric.Natural
 import Control.Monad.Catch
 import Control.Monad.Conc.Class
 import Control.Concurrent.Classy.STM.TChan
+import Control.Concurrent.Classy.Async
 
-import Test.DejaFu.Conc
+import Test.DejaFu hiding (get, ThreadId)
+import Test.DejaFu.Conc hiding (ThreadId)
+import Test.Tasty
+import Test.Tasty.DejaFu hiding (get)
 import qualified Test.Tasty.HUnit as HUnit
 
 import TestUtils
@@ -50,94 +54,14 @@ instance StateMachine Store StoreCmd where
       Set x n -> Map.insert x n store
       Incr x -> Map.adjust succ x store
 
---------------------------------------------------------------------------------
--- Test Raft Scenarios
---
---   We want the 'RaftTestM' monad to encapsulate all state for every node in
---   the network. This includes datastructures for each node such as:
---     - the list or sequence representing the communication link used for
---       receiving messages from other nodes
---     - the event TChan (*)
---     - the replicated log
---     - the persistent state
---     - the client responses if the node was leader
---   and the read only environement for each node:
---     - the node config
---
---   For the 'RaftTestM' monad, most node interaction will happen in a pure way,
---   specified by the type class instances implemented for the monad as required
---   by the Raft library interface (but only the ones in 'runRaftNode'',
---   transitively from 'handleEventLoop')! These pure interfaces will look a lot
---   like the existing implementation details of the tests in 'test/TestRaft.hs`
---   There will, however, be a single impure component of this implementation:
---   under the hood, the raft library's core event handler loop fixes a 'TChan'
---   as the main event queue (for the moment), and thus we must use IO to fork
---   threads to run instances of raft nodes, such that they can progress via
---   `handleEvent` state machine steps called by each iteration of
---   `handleEventLoop` in which a thread blocking read on the event queue is
---   called.
-
---    Pure Interfaces:
---    ----------------
---      - RaftSendRPC
---      - RaftSendClient
---      - RaftPersist
---      - RaftLog
---
---    Impure Interfaces:
---    ------------------
---      - Controlled writes to nodes' event queues.
---
---
---    [note]:
---
---        Perhaps it _would_ be best to expose an event queue record or pair of
---        typeclasses parameterized by the underlying monad, exposing a
---        enqueue/dequeue interface such that the raft node can be run in pure
---        environments.
---
---        Furthermore, we could provide typeclasses or record fields to the
---        'runRaftNode' function specifiying the necessary timer behaviors
---        'startTimer', 'waitTimer', and 'resetTimer'.
---
---        These changes would result in _all_ event producers being configurable
---        by the user, instead of only the receiving of RPC messages. I'm not
---        sure if this is the best option, thus the questions remain:
---          > Is this type class overload?
---          > Are we leaving too many options to the user (programmer)?
---          > Which event producers are most important to be configurable?
---          > Which event producers would users want to configure?
---
---
---
---  TODO
---
---    Before implementation starts, we need to have a good approach to the
---    following roadblocks:
---
---      - Since timers are directly tied to the `handleAction` step of the main
---        `handleEventLoop`, we need to decide how to circumvent the
---        `runRaftNode` function's forced creation of timers.
---
---      - We need to write an intermediate `runRaftNode'` function that either
---        exposes the event 'TChan' that is used in the main `handleEventLoop` or
---        takes an event `TChan` as an argument so that the test module has
---        access to the event channel for manual placement of events.
---
---      - ... Alberto and I should discuss this implementation and decide if
---        the previous listed roadblocks are the only ones that need to be
---        crossed.
---
---------------------------------------------------------------------------------
-
-type TestEventChan = EventChan RaftTestM StoreCmd
-type TestClientRespChan = TChan (STM RaftTestM) (ClientResponse Store)
+type TestEventChan = EventChan ConcIO StoreCmd
+type TestClientRespChan = TChan (STM ConcIO) (ClientResponse Store)
 
 -- | Node specific environment
 data TestNodeEnv = TestNodeEnv
   { testNodeEventChans :: Map NodeId TestEventChan
-  , testNodeConfig :: NodeConfig
   , testClientRespChans :: Map ClientId TestClientRespChan
+  , testNodeConfig :: NodeConfig
   }
 
 -- | Node specific state
@@ -147,18 +71,18 @@ data TestNodeState = TestNodeState
   }
 
 -- | A map of node ids to their respective node data
-type TestState = Map NodeId TestNodeState
+type TestNodeStates = Map NodeId TestNodeState
 
 newtype RaftTestM a = RaftTestM {
-    unRaftTestM :: ReaderT TestNodeEnv (StateT TestState ConcIO) a
-  } deriving (Functor, Applicative, Monad, MonadIO, MonadReader TestNodeEnv, MonadState TestState)
+    unRaftTestM :: ReaderT TestNodeEnv (StateT TestNodeStates ConcIO) a
+  } deriving (Functor, Applicative, Monad, MonadIO, MonadReader TestNodeEnv, MonadState TestNodeStates)
 
 deriving instance MonadThrow RaftTestM
 deriving instance MonadCatch RaftTestM
 deriving instance MonadMask RaftTestM
 deriving instance MonadConc RaftTestM
 
-runRaftTestM :: TestNodeEnv -> TestState -> RaftTestM a -> ConcIO a
+runRaftTestM :: TestNodeEnv -> TestNodeStates -> RaftTestM a -> ConcIO a
 runRaftTestM testEnv testState =
   flip evalStateT testState . flip runReaderT testEnv . unRaftTestM
 
@@ -182,14 +106,14 @@ getNodeState :: NodeId -> RaftTestM TestNodeState
 getNodeState nid = do
   testState <- get
   case Map.lookup nid testState of
-    Nothing -> throwTestErr $ "Node id " <> show nid <> " does not exist in TestState"
+    Nothing -> throwTestErr $ "Node id " <> show nid <> " does not exist in TestNodeStates"
     Just testNodeState -> pure testNodeState
 
 modifyNodeState :: NodeId -> (TestNodeState -> TestNodeState) -> RaftTestM ()
 modifyNodeState nid f =
   modify $ \testState ->
     case Map.lookup nid testState of
-      Nothing -> panic $ "Node id " <> show nid <> " does not exist in TestState"
+      Nothing -> panic $ "Node id " <> show nid <> " does not exist in TestNodeStates"
       Just testNodeState -> Map.insert nid (f testNodeState) testState
 
 instance RaftPersist RaftTestM where
@@ -251,3 +175,64 @@ instance RaftReadLog RaftTestM StoreCmd where
     case log of
       Empty -> pure (Right Nothing)
       _ :|> lastEntry -> pure (Right (Just lastEntry))
+
+--------------------------------------------------------------------------------
+
+initTestChanMaps :: ConcIO (Map NodeId TestEventChan, Map ClientId TestClientRespChan)
+initTestChanMaps = do
+  eventChans <-
+    Map.fromList . zip (toList nodeIds) <$>
+      atomically (replicateM (length nodeIds) newTChan)
+  clientRespChans <-
+    Map.fromList . zip [client0] <$>
+      atomically (replicateM 1 newTChan)
+  pure (eventChans, clientRespChans)
+
+initRaftTestEnvs
+  :: Map NodeId TestEventChan
+  -> Map ClientId TestClientRespChan
+  -> ([TestNodeEnv], TestNodeStates)
+initRaftTestEnvs eventChans clientRespChans = (testNodeEnvs, testStates)
+  where
+    testNodeEnvs = map (TestNodeEnv eventChans clientRespChans) testConfigs
+    testStates = Map.fromList $ zip (toList nodeIds) $
+      replicate (length nodeIds) (TestNodeState mempty initPersistentState)
+
+runTestNode :: TestNodeEnv -> TestNodeStates -> ConcIO ()
+runTestNode testEnv testState =
+    runRaftTestM testEnv testState $
+      runRaftT initRaftNodeState raftEnv $
+        handleEventLoop (testNodeConfig testEnv) (mempty :: Store) (liftIO . print)
+  where
+    nid = configNodeId (testNodeConfig testEnv)
+    Just eventChan = Map.lookup nid (testNodeEventChans testEnv)
+    raftEnv = RaftEnv eventChan dummyTimer dummyTimer
+    dummyTimer = pure ()
+
+forkTestNodes :: [TestNodeEnv] -> TestNodeStates -> ConcIO [ThreadId ConcIO]
+forkTestNodes testEnvs testStates =
+  mapM (fork . flip runTestNode testStates) testEnvs
+
+--------------------------------------------------------------------------------
+
+test_concurrency :: [TestTree]
+test_concurrency =
+    [ testDejafuWay (boundedWay 100) defaultMemType "deadlocks" deadlocksNever initProtocol ]
+  where
+    boundedWay :: LengthBound -> Way
+    boundedWay n = systematically defaultBounds { boundLength = Just n }
+
+initProtocol :: ConcIO ()
+initProtocol = do
+  (eventChans, clientRespChans) <- initTestChanMaps
+  let (testNodeEnvs, testNodeStates) = initRaftTestEnvs eventChans clientRespChans
+  tids <- forkTestNodes testNodeEnvs testNodeStates
+  let Just node0EventChan = Map.lookup node0 eventChans
+  atomically $ writeTChan node0EventChan (TimeoutEvent ElectionTimeout)
+  atomically $ writeTChan node0EventChan $ MessageEvent $
+    ClientRequestEvent $ ClientRequest client0 $ ClientWriteReq (Set "x" 7)
+  let Just client0RespChan = Map.lookup client0 clientRespChans
+  ClientWriteResponse (ClientWriteResp idx) <- atomically $ readTChan client0RespChan
+  when (idx /= Index 3) $ -- This should fail (to see if this test is actually capturing failure)
+    throw $ RaftTestError ("Failure: " <> show idx)
+  mapM_ killThread tids

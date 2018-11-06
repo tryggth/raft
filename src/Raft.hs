@@ -22,6 +22,7 @@ module Raft
   , RaftEnv(..)
   , RaftNodeState(..)
   , runRaftNode
+  , runRaftT
 
   -- Action
   , Action(..)
@@ -44,6 +45,7 @@ module Raft
   , Event(..)
 
   -- Handle
+  , handleEventLoop
   , handleEvent
 
   -- Log
