@@ -53,12 +53,14 @@ class RaftSendClient m sm where
 class RaftRecvClient m v where
   receiveClient :: m (ClientRequest v)
 
+type EventChan m v = TChan (STM m) (Event v)
+
 -- | The raft server environment composed of the concurrent variables used in
 -- the effectful raft layer.
 data RaftEnv v m = RaftEnv
-  { serverEventChan :: TChan (STM m) (Event v)
-  , serverElectionTimer :: Timer m
-  , serverHeartbeatTimer :: Timer m
+  { eventChan :: EventChan m v
+  , resetElectionTimer :: m ()
+  , resetHeartbeatTimer :: m ()
   }
 
 newtype RaftT s v m a = RaftT
@@ -102,7 +104,7 @@ runRaftNode
    -> sm
    -> (LogMsg -> m ())
    -> m ()
-runRaftNode nodeConfig@NodeConfig{..} timerSeed initStateMachine logWriter = do
+runRaftNode nodeConfig@NodeConfig{..} timerSeed initStateMachine logger = do
   eventChan <- atomically newTChan
 
   electionTimer <- newTimerRange timerSeed configElectionTimeout
@@ -114,9 +116,13 @@ runRaftNode nodeConfig@NodeConfig{..} timerSeed initStateMachine logWriter = do
   fork (rpcHandler eventChan)
   fork (clientReqHandler eventChan)
 
-  let raftEnv = RaftEnv eventChan electionTimer heartbeatTimer
+
+  let resetElectionTimer = resetTimer electionTimer
+      resetHeartbeatTimer = resetTimer heartbeatTimer
+      raftEnv = RaftEnv eventChan resetElectionTimer resetHeartbeatTimer
+
   runRaftT initRaftNodeState raftEnv $
-    handleEventLoop nodeConfig initStateMachine logWriter
+    handleEventLoop nodeConfig initStateMachine logger
 
 handleEventLoop
   :: forall s sm v m.
@@ -135,7 +141,7 @@ handleEventLoop
   -> sm
   -> (LogMsg -> m ())
   -> RaftT s v m ()
-handleEventLoop nodeConfig initStateMachine logWriter = do
+handleEventLoop nodeConfig initStateMachine logger = do
     ePersistentState <- lift readPersistentState
     case ePersistentState of
       Left err -> throw err
@@ -143,7 +149,7 @@ handleEventLoop nodeConfig initStateMachine logWriter = do
   where
     handleEventLoop' :: sm -> PersistentState -> RaftT s v m ()
     handleEventLoop' stateMachine persistentState = do
-      event <- atomically . readTChan =<< asks serverEventChan
+      event <- atomically . readTChan =<< asks eventChan
       loadLogEntryTermAtAePrevLogIndex event
       raftNodeState <- get
       traceM ("\n[Event]: " <> show event)
@@ -164,7 +170,7 @@ handleEventLoop nodeConfig initStateMachine logWriter = do
       -- Update raft node state with the resulting node state
       put resRaftNodeState
       -- Handle logs produced by core state machine
-      handleLogs logWriter $ twLogs outputs
+      handleLogs logger $ twLogs outputs
       -- Handle actions produced by core state machine
       handleActions nodeConfig $ twActions outputs
       -- Apply new log entries to the state machine
@@ -231,8 +237,8 @@ handleAction nodeConfig action = do
     RespondToClient cid cr -> lift $ sendClient cid cr
     ResetTimeoutTimer tout ->
       case tout of
-        ElectionTimeout -> resetServerTimer serverElectionTimer
-        HeartbeatTimeout -> resetServerTimer serverHeartbeatTimer
+        ElectionTimeout -> lift . resetElectionTimer =<< ask
+        HeartbeatTimeout -> lift . resetHeartbeatTimer =<< ask
     AppendLogEntries entries -> do
       lift (updateLog entries)
       -- Update the last log entry data

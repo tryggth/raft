@@ -4,22 +4,30 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module TestRaft2 where
 
-import Protolude
-import qualified Data.Sequence as Seq
-import Data.Sequence (Seq(..), (<|), (|>))
+import Protolude hiding (STM, TChan, newTChan, readTChan, writeTChan, atomically)
+
+import Data.Sequence (Seq(..), (><), dropWhileR, (!?))
 import qualified Data.Map as Map
-import qualified Data.Set as Set
 import qualified Data.Serialize as S
 import Numeric.Natural
 
+import Control.Monad.Catch
+import Control.Monad.Conc.Class
+import Control.Concurrent.Classy.STM.TChan
+
+import Test.DejaFu.Conc
 import qualified Test.Tasty.HUnit as HUnit
 
 import TestUtils
 
+import Raft
 import Raft.Action
 import Raft.Client
 import Raft.Config
@@ -132,3 +140,134 @@ instance StateMachine Store StoreCmd where
 --        crossed.
 --
 --------------------------------------------------------------------------------
+
+type TestEventChan = EventChan RaftTestM StoreCmd
+type TestClientRespChan = TChan (STM RaftTestM) (ClientResponse Store)
+
+-- | Node specific environment
+data TestNodeEnv = TestNodeEnv
+  { testNodeEventChans :: Map NodeId TestEventChan
+  , testNodeConfig :: NodeConfig
+  , testClientRespChans :: Map ClientId TestClientRespChan
+  }
+
+-- | Node specific state
+data TestNodeState = TestNodeState
+  { testNodeLog :: Entries StoreCmd
+  , testNodePersistentState :: PersistentState
+  }
+
+-- | A map of node ids to their respective node data
+type TestState = Map NodeId TestNodeState
+
+newtype RaftTestM a = RaftTestM {
+    unRaftTestM :: ReaderT TestNodeEnv (StateT TestState ConcIO) a
+  } deriving (Functor, Applicative, Monad, MonadIO, MonadReader TestNodeEnv, MonadState TestState)
+
+deriving instance MonadThrow RaftTestM
+deriving instance MonadCatch RaftTestM
+deriving instance MonadMask RaftTestM
+deriving instance MonadConc RaftTestM
+
+runRaftTestM :: TestNodeEnv -> TestState -> RaftTestM a -> ConcIO a
+runRaftTestM testEnv testState =
+  flip evalStateT testState . flip runReaderT testEnv . unRaftTestM
+
+newtype RaftTestError = RaftTestError Text
+  deriving (Show)
+
+instance Exception RaftTestError
+throwTestErr = throw . RaftTestError
+
+askSelfNodeId :: RaftTestM NodeId
+askSelfNodeId = asks (configNodeId . testNodeConfig)
+
+lookupNodeEventChan :: NodeId -> RaftTestM TestEventChan
+lookupNodeEventChan nid = do
+  testChanMap <- asks testNodeEventChans
+  case Map.lookup nid testChanMap of
+    Nothing -> throwTestErr $ "Node id " <> show nid <> " does not exist in TestEnv"
+    Just testChan -> pure testChan
+
+getNodeState :: NodeId -> RaftTestM TestNodeState
+getNodeState nid = do
+  testState <- get
+  case Map.lookup nid testState of
+    Nothing -> throwTestErr $ "Node id " <> show nid <> " does not exist in TestState"
+    Just testNodeState -> pure testNodeState
+
+modifyNodeState :: NodeId -> (TestNodeState -> TestNodeState) -> RaftTestM ()
+modifyNodeState nid f =
+  modify $ \testState ->
+    case Map.lookup nid testState of
+      Nothing -> panic $ "Node id " <> show nid <> " does not exist in TestState"
+      Just testNodeState -> Map.insert nid (f testNodeState) testState
+
+instance RaftPersist RaftTestM where
+  type RaftPersistError RaftTestM = RaftTestError
+  writePersistentState pstate' = do
+    nid <- askSelfNodeId
+    fmap Right $ modify $ \testState ->
+      case Map.lookup nid testState of
+        Nothing -> testState
+        Just testNodeState -> do
+          let pstate = testNodePersistentState testNodeState
+              newTestNodeState = testNodeState { testNodePersistentState = pstate' }
+          Map.insert nid newTestNodeState testState
+  readPersistentState = do
+    nid <- askSelfNodeId
+    testState <- get
+    case Map.lookup nid testState of
+      Nothing -> pure $ Left (RaftTestError "Failed to find node in environment")
+      Just testNodeState -> pure $ Right (testNodePersistentState testNodeState)
+
+instance RaftSendRPC RaftTestM StoreCmd where
+  sendRPC nid rpc = do
+    eventChan <- lookupNodeEventChan nid
+    atomically $ writeTChan eventChan (MessageEvent (RPCMessageEvent rpc))
+
+instance RaftSendClient RaftTestM Store where
+  sendClient cid cr = do
+    clientRespChans <- asks testClientRespChans
+    case Map.lookup cid clientRespChans of
+      Nothing -> panic "Failed to find client id in environment"
+      Just clientRespChan -> atomically (writeTChan clientRespChan cr)
+
+instance RaftWriteLog RaftTestM StoreCmd where
+  type RaftWriteLogError RaftTestM = RaftTestError
+  writeLogEntries entries = do
+    nid <- askSelfNodeId
+    fmap Right $
+      modifyNodeState nid $ \testNodeState ->
+        let log = testNodeLog testNodeState
+         in testNodeState { testNodeLog = log >< entries }
+
+instance RaftDeleteLog RaftTestM where
+  type RaftDeleteLogError RaftTestM = RaftTestError
+  deleteLogEntriesFrom idx = do
+    nid <- askSelfNodeId
+    fmap Right $
+      modifyNodeState nid $ \testNodeState ->
+        let log = testNodeLog testNodeState
+            newLog = dropWhileR ((>=) idx . entryIndex) log
+         in testNodeState { testNodeLog = newLog }
+
+instance RaftReadLog RaftTestM StoreCmd where
+  type RaftReadLogError RaftTestM = RaftTestError
+  readLogEntry (Index idx) = do
+    log <- fmap testNodeLog . getNodeState =<< askSelfNodeId
+    pure $ Right (log !? fromIntegral idx)
+  readLastLogEntry = do
+    log <- fmap testNodeLog . getNodeState =<< askSelfNodeId
+    case log of
+      Empty -> pure (Right Nothing)
+      _ :|> lastEntry -> pure (Right (Just lastEntry))
+
+runTestRaftNode
+  :: NodeConfig
+  -> RaftTestM ()
+runTestRaftNode nodeConfig = do
+  eventChan <- atomically newTChan
+  let raftEnv = RaftEnv eventChan (pure ()) (pure ())
+  runRaftT initRaftNodeState raftEnv $
+    handleEventLoop nodeConfig (mempty :: Store) (liftIO . print)
