@@ -34,17 +34,6 @@ import TestUtils
 
 import Numeric.Natural
 
-import Raft.Action
-import Raft.Client
-import Raft.Config
-import Raft.Event hiding (Message)
-import Raft.Handle (handleEvent)
-import Raft.Log
-import Raft.Monad
-import Raft.NodeState
-import Raft.Persistent
-import Raft.RPC
-import Raft.Types
 import Raft
 
 --type Var = ByteString

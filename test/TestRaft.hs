@@ -25,17 +25,7 @@ import qualified Test.Tasty.HUnit as HUnit
 
 import TestUtils
 
-import Raft.Action
-import Raft.Client
-import Raft.Config
-import Raft.Event
-import Raft.Handle (handleEvent)
-import Raft.Log
-import Raft.Monad
-import Raft.NodeState
-import Raft.Persistent
-import Raft.RPC
-import Raft.Types
+import Raft hiding (sendClient)
 
 --------------------------------------------------------------------------------
 -- State Machine & Commands

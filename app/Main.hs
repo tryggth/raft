@@ -41,15 +41,6 @@ import System.Console.Haskeline.MonadException hiding (handle)
 import Text.Read
 
 import Raft
-import Raft.Config
-import Raft.Persistent
-import Raft.Log
-import Raft.Types
-import Raft.Event
-import Raft.RPC
-import Raft.Client
-import Raft.Monad hiding (send)
-import Raft.NodeState
 
 --------------------------------------------------------------------------------
 -- State Machine & Commands
@@ -198,8 +189,7 @@ retryConnection tNodeSocketPeers nid sockM msg e =  case sockM of
       pure $ Just sock
   where
     (host, port) = nidToHostPort nid
-
-
+    
 handleFailure
   :: TVar (STM IO) (Map NodeId Socket)
   -> [NodeId]

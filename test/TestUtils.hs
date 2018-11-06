@@ -8,19 +8,16 @@ import qualified Data.Set as Set
 import qualified Data.Map as Map
 import qualified Data.Map.Merge.Lazy as Merge
 
-import Raft.NodeState
-import qualified Raft.NodeState
-import Raft.Config
-import Raft.Types
+import Raft
 
 isRaftLeader :: RaftNodeState v -> Bool
-isRaftLeader (RaftNodeState rns) = Raft.NodeState.isLeader rns
+isRaftLeader (RaftNodeState rns) = isLeader rns
 
 isRaftCandidate :: RaftNodeState v -> Bool
-isRaftCandidate (RaftNodeState rns) = Raft.NodeState.isCandidate rns
+isRaftCandidate (RaftNodeState rns) = isCandidate rns
 
 isRaftFollower :: RaftNodeState v -> Bool
-isRaftFollower (RaftNodeState rns) = Raft.NodeState.isFollower rns
+isRaftFollower (RaftNodeState rns) = isFollower rns
 
 checkCurrentLeader :: RaftNodeState v -> CurrentLeader
 checkCurrentLeader (RaftNodeState (NodeFollowerState FollowerState{..})) = fsCurrentLeader
