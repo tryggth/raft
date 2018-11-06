@@ -251,12 +251,3 @@ instance RaftReadLog RaftTestM StoreCmd where
     case log of
       Empty -> pure (Right Nothing)
       _ :|> lastEntry -> pure (Right (Just lastEntry))
-
-runTestRaftNode
-  :: NodeConfig
-  -> RaftTestM ()
-runTestRaftNode nodeConfig = do
-  eventChan <- atomically newTChan
-  let raftEnv = RaftEnv eventChan (pure ()) (pure ())
-  runRaftT initRaftNodeState raftEnv $
-    handleEventLoop nodeConfig (mempty :: Store) (liftIO . print)

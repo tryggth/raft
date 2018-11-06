@@ -17,6 +17,10 @@ module Raft
   , RaftRecvClient(..)
   , RaftPersist(..)
 
+  , EventChan
+
+  , RaftEnv(..)
+  , RaftNodeState(..)
   , runRaftNode
 
   -- Action
