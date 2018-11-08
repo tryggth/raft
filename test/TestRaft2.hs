@@ -11,11 +11,13 @@
 
 module TestRaft2 where
 
-import Protolude hiding (STM, TChan, newTChan, readTChan, writeTChan, atomically, killThread, ThreadId)
+import Protolude hiding
+  (STM, TChan, newTChan, readMVar, readTChan, writeTChan, atomically, killThread, ThreadId)
 
 import Data.Sequence (Seq(..), (><), dropWhileR, (!?))
 import qualified Data.Map as Map
 import qualified Data.Serialize as S
+import qualified Data.Text as T (intercalate)
 import Numeric.Natural
 
 import Control.Monad.Catch
@@ -202,7 +204,7 @@ runTestNode :: TestNodeEnv -> TestNodeStates -> ConcIO ()
 runTestNode testEnv testState =
     runRaftTestM testEnv testState $
       runRaftT initRaftNodeState raftEnv $
-        handleEventLoop (testNodeConfig testEnv) (mempty :: Store) (liftIO . print)
+        handleEventLoop (testNodeConfig testEnv) (mempty :: Store) (const $ pure ())
   where
     nid = configNodeId (testNodeConfig testEnv)
     Just eventChan = Map.lookup nid (testNodeEventChans testEnv)
@@ -217,12 +219,12 @@ forkTestNodes testEnvs testStates =
 
 test_concurrency :: [TestTree]
 test_concurrency =
-    [ testDejafuWay (boundedWay 100) defaultMemType "deadlocks" deadlocksNever initProtocol ]
+    [ testDejafu{-Way (boundedWay 100) defaultMemType-} "deadlocks" deadlocksNever initProtocol ]
   where
     boundedWay :: LengthBound -> Way
     boundedWay n = systematically defaultBounds { boundLength = Just n }
 
-initProtocol :: ConcIO ()
+initProtocol :: ConcIO Store
 initProtocol = do
   (eventChans, clientRespChans) <- initTestChanMaps
   let (testNodeEnvs, testNodeStates) = initRaftTestEnvs eventChans clientRespChans
@@ -230,9 +232,10 @@ initProtocol = do
   let Just node0EventChan = Map.lookup node0 eventChans
   atomically $ writeTChan node0EventChan (TimeoutEvent ElectionTimeout)
   atomically $ writeTChan node0EventChan $ MessageEvent $
-    ClientRequestEvent $ ClientRequest client0 $ ClientWriteReq (Set "x" 7)
+    ClientRequestEvent $ ClientRequest client0 ClientReadReq
+  -- res <- readMVar =<<
+  --   spawn (pollStateMachine client0 node0EventChan client0RespChan)
   let Just client0RespChan = Map.lookup client0 clientRespChans
-  ClientWriteResponse (ClientWriteResp idx) <- atomically $ readTChan client0RespChan
-  when (idx /= Index 3) $ -- This should fail (to see if this test is actually capturing failure)
-    throw $ RaftTestError ("Failure: " <> show idx)
+  ClientReadResponse (ClientReadResp res) <- atomically $ readTChan client0RespChan
   mapM_ killThread tids
+  pure res

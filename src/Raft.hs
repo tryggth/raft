@@ -253,12 +253,12 @@ handleEventLoop nodeConfig initStateMachine logger = do
       event <- atomically . readTChan =<< asks eventChan
       loadLogEntryTermAtAePrevLogIndex event
       raftNodeState <- get
-      traceM ("\n[Event]: " <> show event)
-      traceM ("[NodeState]: " <> show raftNodeState)
+      -- traceM ("\n[Event]: " <> show event)
+      -- traceM ("[NodeState]: " <> show raftNodeState)
       Right log :: Either (RaftReadLogError m) (Entries v) <- lift $ readLogEntriesFrom index0
-      traceM ("[Log]: " <> show log)
-      traceM $ "[State Machine]: " <> show stateMachine
-      traceM $ "[Persistent State]: " <> show persistentState
+      -- traceM ("[Log]: " <> show log)
+      -- traceM $ "[State Machine]: " <> show stateMachine
+      -- traceM $ "[Persistent State]: " <> show persistentState
       -- Perform core state machine transition, handling the current event
       let transitionEnv = TransitionEnv nodeConfig stateMachine
           (resRaftNodeState, resPersistentState, outputs) =
@@ -323,7 +323,7 @@ handleAction
   -> Action sm v
   -> RaftT s v m ()
 handleAction nodeConfig action = do
-  traceM $ "[Action]: " <> show action
+  -- traceM $ "[Action]: " <> show action
   case action of
     SendRPC nid sendRpcAction -> do
       rpcMsg <- mkRPCfromSendRPCAction sendRpcAction
@@ -409,8 +409,8 @@ applyLogEntries
 applyLogEntries stateMachine = do
     raftNodeState@(RaftNodeState nodeState) <- get
     let lastAppliedIndex = lastApplied nodeState
-    traceM $ "Last Applied: " <> show lastAppliedIndex
-          <> " | Commit: " <> show (commitIndex nodeState)
+    -- traceM $ "Last Applied: " <> show lastAppliedIndex
+    --      <> " | Commit: " <> show (commitIndex nodeState)
     if commitIndex nodeState > lastAppliedIndex
       then do
         let resNodeState = incrLastApplied nodeState
@@ -421,9 +421,9 @@ applyLogEntries stateMachine = do
           Left err -> throw err
           Right Nothing -> panic "No log entry at 'newLastAppliedIndex'"
           Right (Just logEntry) -> do
-            traceM $ "[Prev State Machine]: " <> show stateMachine
+            -- traceM $ "[Prev State Machine]: " <> show stateMachine
             let newStateMachine = applyCommittedLogEntry stateMachine (entryValue logEntry)
-            traceM $ "[Res State Machine]: " <> show newStateMachine
+            -- traceM $ "[Res State Machine]: " <> show newStateMachine
             applyLogEntries newStateMachine
       else pure stateMachine
   where
