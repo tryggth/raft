@@ -37,24 +37,6 @@ class StateMachine sm v | sm -> v where
 -- Raft Monad
 --------------------------------------------------------------------------------
 
--- tellLog' :: Maybe (NodeState a) -> Text -> TransitionM sm v ()
--- tellLog' nsM s = do
---   nid <- askNodeId
---   tell (mempty { twLogs = [LogMsg nid (mode <$> nsM) s] })
---   where
---     mode :: NodeState a -> Text
---     mode ns =
---       case ns of
---         NodeFollowerState _ -> "Follower"
---         NodeCandidateState _ -> "Candidate"
---         NodeLeaderState _ -> "Leader"
---
--- tellLogWithState :: NodeState a -> Text -> TransitionM sm v ()
--- tellLogWithState ns = tellLog' (Just ns)
---
--- tellLog :: Text -> TransitionM sm v ()
--- tellLog = tellLog' Nothing
-
 tellAction :: Action sm v -> TransitionM sm v ()
 tellAction a = tell [a]
 
