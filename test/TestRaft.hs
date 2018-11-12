@@ -26,6 +26,7 @@ import qualified Test.Tasty.HUnit as HUnit
 import TestUtils
 
 import Raft hiding (sendClient)
+import Raft.Logging (logMsgToText, logMsgData, logMsgNodeId)
 
 --------------------------------------------------------------------------------
 -- State Machine & Commands
@@ -196,11 +197,13 @@ instance RaftDeleteLog RTLog where
 -- Handle actions and events --
 -------------------------------
 
-testHandleLogs :: Maybe [NodeId] -> (LogMsg -> IO ()) -> LogMsgs -> Scenario ()
+testHandleLogs :: Maybe [NodeId] -> (Text -> IO ()) -> [LogMsg] -> Scenario ()
 testHandleLogs nIdsM f logs = liftIO $
   case nIdsM of
-    Nothing -> mapM_ f logs
-    Just nIds -> mapM_ f (filter (\l -> twNodeId l `elem` nIds) logs)
+    Nothing -> mapM_ (f . logMsgToText) logs
+    Just nIds ->
+      mapM_ (f . logMsgToText) $ flip filter logs $ \log ->
+        logMsgNodeId (logMsgData log) `elem` nIds
 
 testHandleActions :: NodeId -> [Action Store StoreCmd] -> Scenario ()
 testHandleActions sender =
@@ -279,12 +282,12 @@ testHandleAction sender action =
 testHandleEvent :: NodeId -> Event StoreCmd -> Scenario ()
 testHandleEvent nodeId event = do
   (nodeConfig, sm, raftState, persistentState) <- getNodeInfo nodeId
-  let transitionEnv = TransitionEnv nodeConfig sm
-  let (newRaftState, newPersistentState, transitionW) = handleEvent raftState transitionEnv persistentState event
+  let transitionEnv = TransitionEnv nodeConfig sm raftState
+  let (newRaftState, newPersistentState, actions, logMsgs) = handleEvent raftState transitionEnv persistentState event
   updatePersistentState nodeId newPersistentState
   updateRaftNodeState nodeId newRaftState
-  testHandleActions nodeId (twActions transitionW)
-  testHandleLogs Nothing (const $ pure ()) (twLogs transitionW)
+  testHandleActions nodeId actions
+  testHandleLogs Nothing (const $ pure ()) logMsgs
   applyLogEntries nodeId sm
   where
     applyLogEntries

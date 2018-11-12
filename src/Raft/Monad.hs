@@ -2,11 +2,13 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE GADTs #-}
 
 module Raft.Monad where
 
-import Protolude
+import Protolude hiding (pass)
 import Control.Monad.RWS
 import qualified Data.Set as Set
 
@@ -19,6 +21,8 @@ import Raft.Persistent
 import Raft.NodeState
 import Raft.RPC
 import Raft.Types
+import Raft.Logging (RaftLogger, runRaftLoggerT, RaftLoggerT(..), LogMsg)
+import qualified Raft.Logging as Logging
 
 --------------------------------------------------------------------------------
 -- State Machine
@@ -33,65 +37,64 @@ class StateMachine sm v | sm -> v where
 -- Raft Monad
 --------------------------------------------------------------------------------
 
-data LogMsg = LogMsg
-  { twNodeId :: NodeId
-  , twNodeState :: Maybe Text
-  , twMsg :: Text
-  } deriving Show
-
-type LogMsgs = [LogMsg]
-
-data TransitionWriter sm v = TransitionWriter
-  { twActions :: [Action sm v]
-  , twLogs :: LogMsgs
-  }
-
-instance Semigroup (TransitionWriter sm v) where
-  t1 <> t2 = TransitionWriter (twActions t1 <> twActions t2) (twLogs t1 <> twLogs t2)
-
-instance Monoid (TransitionWriter sm v) where
-  mempty = TransitionWriter [] []
-
-tellLog' :: Maybe (NodeState a) -> Text -> TransitionM sm v ()
-tellLog' nsM s = do
-  nid <- askNodeId
-  tell (mempty { twLogs = [LogMsg nid (mode <$> nsM) s] })
-  where
-    mode :: NodeState a -> Text
-    mode ns =
-      case ns of
-        NodeFollowerState _ -> "Follower"
-        NodeCandidateState _ -> "Candidate"
-        NodeLeaderState _ -> "Leader"
-
-tellLogWithState :: NodeState a -> Text -> TransitionM sm v ()
-tellLogWithState ns = tellLog' (Just ns)
-
-tellLog :: Text -> TransitionM sm v ()
-tellLog = tellLog' Nothing
+-- tellLog' :: Maybe (NodeState a) -> Text -> TransitionM sm v ()
+-- tellLog' nsM s = do
+--   nid <- askNodeId
+--   tell (mempty { twLogs = [LogMsg nid (mode <$> nsM) s] })
+--   where
+--     mode :: NodeState a -> Text
+--     mode ns =
+--       case ns of
+--         NodeFollowerState _ -> "Follower"
+--         NodeCandidateState _ -> "Candidate"
+--         NodeLeaderState _ -> "Leader"
+--
+-- tellLogWithState :: NodeState a -> Text -> TransitionM sm v ()
+-- tellLogWithState ns = tellLog' (Just ns)
+--
+-- tellLog :: Text -> TransitionM sm v ()
+-- tellLog = tellLog' Nothing
 
 tellAction :: Action sm v -> TransitionM sm v ()
-tellAction a = tell (TransitionWriter [a] [])
+tellAction a = tell [a]
 
 tellActions :: [Action sm v] -> TransitionM sm v ()
-tellActions as = tell (TransitionWriter as [])
+tellActions as = tell as
 
 data TransitionEnv sm = TransitionEnv
   { nodeConfig :: NodeConfig
   , stateMachine :: sm
+  , nodeState :: RaftNodeState
   }
 
 newtype TransitionM sm v a = TransitionM
-  { unTransitionM :: RWS (TransitionEnv sm) (TransitionWriter sm v) PersistentState a
-  } deriving (Functor, Applicative, Monad, MonadWriter (TransitionWriter sm v), MonadReader (TransitionEnv sm), MonadState PersistentState)
+  { unTransitionM :: RaftLoggerT (RWS (TransitionEnv sm) [Action sm v] PersistentState) a
+  } deriving (Functor, Applicative, Monad)
+
+instance MonadWriter [Action sm v] (TransitionM sm v) where
+  tell = TransitionM . RaftLoggerT . tell
+  listen = TransitionM . RaftLoggerT . listen . unRaftLoggerT . unTransitionM
+  pass = TransitionM . RaftLoggerT . pass . unRaftLoggerT . unTransitionM
+
+instance MonadReader (TransitionEnv sm) (TransitionM sm v) where
+  ask = TransitionM . RaftLoggerT $ ask
+  local f = TransitionM . RaftLoggerT . local f . unRaftLoggerT . unTransitionM
+
+instance MonadState PersistentState (TransitionM sm v) where
+  get = TransitionM . RaftLoggerT $ lift get
+  put = TransitionM . RaftLoggerT . lift . put
+
+instance RaftLogger (RWS (TransitionEnv sm) [Action sm v] PersistentState) where
+  loggerNodeId = configNodeId <$> asks nodeConfig
+  loggerNodeState = asks nodeState
 
 runTransitionM
   :: TransitionEnv sm
   -> PersistentState
   -> TransitionM sm v a
-  -> (a, PersistentState, TransitionWriter sm v)
-runTransitionM transEnv persistentState transition =
-  runRWS (unTransitionM transition) transEnv persistentState
+  -> ((a, [LogMsg]), PersistentState, [Action sm v])
+runTransitionM transEnv persistentState transitionM =
+  runRWS (runRaftLoggerT (unTransitionM transitionM)) transEnv persistentState
 
 askNodeId :: TransitionM sm v NodeId
 askNodeId = asks (configNodeId . nodeConfig)
@@ -181,3 +184,10 @@ startElection commitIndex lastApplied lastLogEntryData = do
       selfNodeId <- askNodeId
       modify $ \pstate ->
         pstate { votedFor = Just selfNodeId }
+
+--------------------------------------------------------------------------------
+-- Logging
+--------------------------------------------------------------------------------
+
+logInfo = TransitionM . Logging.logInfo
+logDebug = TransitionM . Logging.logDebug

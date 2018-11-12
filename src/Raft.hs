@@ -56,9 +56,7 @@ module Raft
   -- Monad
   , StateMachine(..)
   , LogMsg(..)
-  , LogMsgs
   , TransitionEnv(..)
-  , TransitionWriter(..)
   , TransitionM(..)
 
   -- NodeState
@@ -126,6 +124,7 @@ import Raft.Config
 import Raft.Event
 import Raft.Handle
 import Raft.Log
+import Raft.Logging (RaftLogger, LogMsg, logMsgToText)
 import Raft.Monad
 import Raft.NodeState
 import Raft.Persistent
@@ -154,6 +153,7 @@ data RaftEnv v m = RaftEnv
   { serverEventChan :: TChan (STM m) (Event v)
   , serverElectionTimer :: Timer m
   , serverHeartbeatTimer :: Timer m
+  , raftNodeConfig :: NodeConfig
   }
 
 newtype RaftT v m a = RaftT
@@ -167,6 +167,10 @@ deriving instance MonadThrow m => MonadThrow (RaftT v m)
 deriving instance MonadCatch m => MonadCatch (RaftT v m)
 deriving instance MonadMask m => MonadMask (RaftT v m)
 deriving instance MonadConc m => MonadConc (RaftT v m)
+
+-- instance RaftLogger (RaftT v m) where
+--   loggerNodeId = asks (configNodeId . raftNodeConfig)
+--   loggerNodeState = get
 
 runRaftT
   :: MonadConc m
@@ -195,9 +199,9 @@ runRaftNode
    => NodeConfig
    -> Int
    -> sm
-   -> (LogMsg -> m ())
+   -> (Text -> m ())
    -> m ()
-runRaftNode nodeConfig@NodeConfig{..} timerSeed initStateMachine logWriter = do
+runRaftNode nodeConfig@NodeConfig{..} timerSeed initStateMachine logHandler = do
   eventChan <- atomically newTChan
 
   electionTimer <- newTimerRange timerSeed configElectionTimeout
@@ -209,9 +213,9 @@ runRaftNode nodeConfig@NodeConfig{..} timerSeed initStateMachine logWriter = do
   fork (rpcHandler eventChan)
   fork (clientReqHandler eventChan)
 
-  let raftEnv = RaftEnv eventChan electionTimer heartbeatTimer
+  let raftEnv = RaftEnv eventChan electionTimer heartbeatTimer nodeConfig
   runRaftT initRaftNodeState raftEnv $
-    handleEventLoop nodeConfig initStateMachine logWriter
+    handleEventLoop nodeConfig initStateMachine logHandler
 
 handleEventLoop
   :: forall sm v m.
@@ -228,9 +232,9 @@ handleEventLoop
      )
   => NodeConfig
   -> sm
-  -> (LogMsg -> m ())
+  -> (Text -> m ())
   -> RaftT v m ()
-handleEventLoop nodeConfig initStateMachine logWriter = do
+handleEventLoop nodeConfig initStateMachine logHandler = do
     ePersistentState <- lift readPersistentState
     case ePersistentState of
       Left err -> throw err
@@ -241,15 +245,15 @@ handleEventLoop nodeConfig initStateMachine logWriter = do
       event <- atomically . readTChan =<< asks serverEventChan
       loadLogEntryTermAtAePrevLogIndex event
       raftNodeState <- get
-      traceM ("\n[Event]: " <> show event)
-      traceM ("[NodeState]: " <> show raftNodeState)
+      traceM $ "[Event]: " <> show event
+      traceM $ "[NodeState]: " <> show raftNodeState
       Right log :: Either (RaftReadLogError m) (Entries v) <- lift $ readLogEntriesFrom index0
-      traceM ("[Log]: " <> show log)
+      traceM $ "[Log]: " <> show log
       traceM $ "[State Machine]: " <> show stateMachine
       traceM $ "[Persistent State]: " <> show persistentState
       -- Perform core state machine transition, handling the current event
-      let transitionEnv = TransitionEnv nodeConfig stateMachine
-          (resRaftNodeState, resPersistentState, outputs) =
+      let transitionEnv = TransitionEnv nodeConfig stateMachine raftNodeState
+          (resRaftNodeState, resPersistentState, actions, logMsgs) =
             Raft.Handle.handleEvent raftNodeState transitionEnv persistentState event
       -- Write persistent state to disk
       eRes <- lift $ writePersistentState resPersistentState
@@ -258,10 +262,10 @@ handleEventLoop nodeConfig initStateMachine logWriter = do
         Right _ -> pure ()
       -- Update raft node state with the resulting node state
       put resRaftNodeState
-      -- Handle logs produced by core state machine
-      handleLogs logWriter $ twLogs outputs
+      -- Handle logs producek by core state machine
+      handleLogs logHandler logMsgs
       -- Handle actions produced by core state machine
-      handleActions nodeConfig $ twActions outputs
+      handleActions nodeConfig actions
       -- Apply new log entries to the state machine
       resStateMachine <- applyLogEntries stateMachine
       handleEventLoop' resStateMachine resPersistentState
@@ -436,10 +440,10 @@ applyLogEntries stateMachine = do
 
 handleLogs
   :: (MonadConc m)
-  => (LogMsg -> m ())
-  -> LogMsgs
+  => (Text -> m ())
+  -> [LogMsg]
   -> RaftT v m ()
-handleLogs f logs = lift $ mapM_ f logs
+handleLogs f logs = lift $ mapM_ (f . logMsgToText) logs
 
 ------------------------------------------------------------------------------
  --Event Producers
