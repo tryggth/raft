@@ -156,23 +156,23 @@ data RaftEnv v m = RaftEnv
   , serverHeartbeatTimer :: Timer m
   }
 
-newtype RaftT s v m a = RaftT
-  { unRaftT :: ReaderT (RaftEnv v m) (StateT (RaftNodeState s) m) a
-  } deriving (Functor, Applicative, Monad, MonadReader (RaftEnv v m), MonadState (RaftNodeState s), Alternative, MonadPlus)
+newtype RaftT v m a = RaftT
+  { unRaftT :: ReaderT (RaftEnv v m) (StateT RaftNodeState m) a
+  } deriving (Functor, Applicative, Monad, MonadReader (RaftEnv v m), MonadState RaftNodeState, Alternative, MonadPlus)
 
-instance MonadTrans (RaftT s m) where
+instance MonadTrans (RaftT v) where
   lift = RaftT . lift . lift
 
-deriving instance MonadThrow m => MonadThrow (RaftT s v m)
-deriving instance MonadCatch m => MonadCatch (RaftT s v m)
-deriving instance MonadMask m => MonadMask (RaftT s v m)
-deriving instance MonadConc m => MonadConc (RaftT s v m)
+deriving instance MonadThrow m => MonadThrow (RaftT v m)
+deriving instance MonadCatch m => MonadCatch (RaftT v m)
+deriving instance MonadMask m => MonadMask (RaftT v m)
+deriving instance MonadConc m => MonadConc (RaftT v m)
 
 runRaftT
   :: MonadConc m
-  => RaftNodeState s
+  => RaftNodeState
   -> RaftEnv v m
-  -> RaftT s v m ()
+  -> RaftT v m ()
   -> m ()
 runRaftT raftNodeState raftEnv =
   flip evalStateT raftNodeState . flip runReaderT raftEnv . unRaftT
@@ -214,7 +214,7 @@ runRaftNode nodeConfig@NodeConfig{..} timerSeed initStateMachine logWriter = do
     handleEventLoop nodeConfig initStateMachine logWriter
 
 handleEventLoop
-  :: forall s sm v m.
+  :: forall sm v m.
      ( Show v, Show sm, Show (Action sm v)
      , MonadConc m
      , StateMachine sm v
@@ -229,14 +229,14 @@ handleEventLoop
   => NodeConfig
   -> sm
   -> (LogMsg -> m ())
-  -> RaftT s v m ()
+  -> RaftT v m ()
 handleEventLoop nodeConfig initStateMachine logWriter = do
     ePersistentState <- lift readPersistentState
     case ePersistentState of
       Left err -> throw err
       Right pstate -> handleEventLoop' initStateMachine pstate
   where
-    handleEventLoop' :: sm -> PersistentState -> RaftT s v m ()
+    handleEventLoop' :: sm -> PersistentState -> RaftT v m ()
     handleEventLoop' stateMachine persistentState = do
       event <- atomically . readTChan =<< asks serverEventChan
       loadLogEntryTermAtAePrevLogIndex event
@@ -268,7 +268,7 @@ handleEventLoop nodeConfig initStateMachine logWriter = do
 
     -- In the case that a node is a follower receiving an AppendEntriesRPC
     -- Event, read the log at the aePrevLogIndex
-    loadLogEntryTermAtAePrevLogIndex :: Event v -> RaftT s v m ()
+    loadLogEntryTermAtAePrevLogIndex :: Event v -> RaftT v m ()
     loadLogEntryTermAtAePrevLogIndex event = do
       case event of
         MessageEvent (RPCMessageEvent (RPCMessage _ (AppendEntriesRPC ae))) -> do
@@ -294,11 +294,11 @@ handleActions
      )
   => NodeConfig
   -> [Action sm v]
-  -> RaftT s v m ()
+  -> RaftT v m ()
 handleActions = mapM_ . handleAction
 
 handleAction
-  :: forall sm v m s.
+  :: forall sm v m.
      ( Show v, Show sm, Show (Action sm v)
      , MonadConc m
      , StateMachine sm v
@@ -309,7 +309,7 @@ handleAction
      )
   => NodeConfig
   -> Action sm v
-  -> RaftT s v m ()
+  -> RaftT v m ()
 handleAction nodeConfig action = do
   traceM $ "[Action]: " <> show action
   case action of
@@ -335,7 +335,7 @@ handleAction nodeConfig action = do
         RaftNodeState (setLastLogEntryData ns entries)
 
   where
-    mkRPCfromSendRPCAction :: SendRPCAction v -> RaftT s v m (RPCMessage v)
+    mkRPCfromSendRPCAction :: SendRPCAction v -> RaftT v m (RPCMessage v)
     mkRPCfromSendRPCAction sendRPCAction = do
       RaftNodeState ns <- get
       RPCMessage (configNodeId nodeConfig) <$>
@@ -393,7 +393,7 @@ applyLogEntries
      , Exception (RaftReadLogError m)
      , StateMachine sm v )
   => sm
-  -> RaftT s v m sm
+  -> RaftT v m sm
 applyLogEntries stateMachine = do
     raftNodeState@(RaftNodeState nodeState) <- get
     let lastAppliedIndex = lastApplied nodeState
@@ -438,7 +438,7 @@ handleLogs
   :: (MonadConc m)
   => (LogMsg -> m ())
   -> LogMsgs
-  -> RaftT s v m ()
+  -> RaftT v m ()
 handleLogs f logs = lift $ mapM_ f logs
 
 ------------------------------------------------------------------------------

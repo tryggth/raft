@@ -68,11 +68,11 @@ leaderResultState transition lstate =
   ResultState transition (NodeLeaderState lstate)
 
 -- | Existential type hiding the internal node state
-data RaftNodeState v where
-  RaftNodeState :: { unRaftNodeState :: NodeState s } -> RaftNodeState v
+data RaftNodeState where
+  RaftNodeState :: { unRaftNodeState :: NodeState s } -> RaftNodeState
 
 -- TODO Take term last long entry term and index as argument
-initRaftNodeState :: RaftNodeState v
+initRaftNodeState :: RaftNodeState
 initRaftNodeState =
   RaftNodeState $
     NodeFollowerState FollowerState
@@ -83,7 +83,7 @@ initRaftNodeState =
       , fsEntryTermAtAEIndex = Nothing
       }
 
-deriving instance Show (RaftNodeState v)
+deriving instance Show RaftNodeState
 
 -- | The volatile state of a Raft Node
 data NodeState (a :: Mode) where

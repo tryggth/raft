@@ -14,7 +14,7 @@ module TestRaft where
 
 import Protolude
 import qualified Data.Sequence as Seq
-import Data.Sequence (Seq(..), (<|), (|>))
+import Data.Sequence (Seq(..), (|>))
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified Data.Serialize as S
@@ -71,7 +71,7 @@ data TestState = TestState
   { testNodeIds :: NodeIds
   , testNodeLogs :: Map NodeId (Entries StoreCmd)
   , testNodeSMs :: Map NodeId Store
-  , testNodeRaftStates :: Map NodeId (RaftNodeState StoreCmd)
+  , testNodeRaftStates :: Map NodeId RaftNodeState
   , testNodePersistentStates :: Map NodeId PersistentState
   , testNodeConfigs :: Map NodeId NodeConfig
   , testClientResps :: ClientResps
@@ -109,14 +109,14 @@ updatePersistentState nodeId persistentState
           { testNodePersistentStates = Map.insert nodeId persistentState testNodePersistentStates
           }
 
-updateRaftNodeState :: NodeId -> RaftNodeState StoreCmd -> Scenario ()
+updateRaftNodeState :: NodeId -> RaftNodeState -> Scenario ()
 updateRaftNodeState nodeId raftState
   = modify $ \testState@TestState{..}
       -> testState
           { testNodeRaftStates = Map.insert nodeId raftState testNodeRaftStates
           }
 
-getNodeInfo :: NodeId -> Scenario (NodeConfig, Store, RaftNodeState StoreCmd, PersistentState)
+getNodeInfo :: NodeId -> Scenario (NodeConfig, Store, RaftNodeState, PersistentState)
 getNodeInfo nId = do
   nodeConfigs <- gets testNodeConfigs
   nodeSMs <- gets testNodeSMs
@@ -348,7 +348,7 @@ testHeartbeat sender = do
   testHandleAction sender
     (BroadcastRPC (Set.filter (sender /=) nIds) (SendAppendEntriesRPC aeData))
   where
-    getInnerLeaderState :: RaftNodeState v -> LeaderState
+    getInnerLeaderState :: RaftNodeState -> LeaderState
     getInnerLeaderState nodeState = case nodeState of
       (RaftNodeState (NodeLeaderState leaderState)) -> leaderState
       _ -> panic "Node must be a leader to access its leader state"
@@ -490,22 +490,22 @@ unit_new_leader = runScenario $ do
 -- Assert utils --
 ------------------
 
-assertNodeState :: Map NodeId (RaftNodeState v) -> [(NodeId, RaftNodeState v -> Bool)] -> IO ()
+assertNodeState :: Map NodeId RaftNodeState -> [(NodeId, RaftNodeState -> Bool)] -> IO ()
 assertNodeState raftNodeStates =
   mapM_ (\(nId, isNodeState) -> HUnit.assertBool (show nId ++ " should be in a different state")
     (maybe False isNodeState (Map.lookup nId raftNodeStates)))
 
-assertLeader :: Map NodeId (RaftNodeState v) -> [(NodeId, CurrentLeader)] -> IO ()
+assertLeader :: Map NodeId RaftNodeState -> [(NodeId, CurrentLeader)] -> IO ()
 assertLeader raftNodeStates =
   mapM_ (\(nId, leader) -> HUnit.assertBool (show nId ++ " should recognize " ++ show leader ++ " as its leader")
     (maybe False ((== leader) . checkCurrentLeader) (Map.lookup nId raftNodeStates)))
 
-assertCommittedLogIndex :: Map NodeId (RaftNodeState v) -> [(NodeId, Index)] -> IO ()
+assertCommittedLogIndex :: Map NodeId RaftNodeState -> [(NodeId, Index)] -> IO ()
 assertCommittedLogIndex raftNodeStates =
   mapM_ (\(nId, idx) -> HUnit.assertBool (show nId ++ " should have " ++ show idx ++ " as its last committed index")
     (maybe False ((== idx) . getCommittedLogIndex) (Map.lookup nId raftNodeStates)))
 
-assertAppliedLogIndex :: Map NodeId (RaftNodeState v) -> [(NodeId, Index)] -> IO ()
+assertAppliedLogIndex :: Map NodeId RaftNodeState -> [(NodeId, Index)] -> IO ()
 assertAppliedLogIndex raftNodeStates =
   mapM_ (\(nId, idx) -> HUnit.assertBool (show nId ++ " should have " ++ show idx ++ " as its last applied index")
     (maybe False ((== idx) . getLastAppliedLog) (Map.lookup nId raftNodeStates)))

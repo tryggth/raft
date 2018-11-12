@@ -23,13 +23,13 @@ import Raft.RPC
 
 -- | Main entry point for handling events
 handleEvent
-  :: forall s sm v.
+  :: forall sm v.
      (StateMachine sm v, Show v)
-  => RaftNodeState s
+  => RaftNodeState
   -> TransitionEnv sm
   -> PersistentState
   -> Event v
-  -> (RaftNodeState s, PersistentState, TransitionWriter sm v)
+  -> (RaftNodeState, PersistentState, TransitionWriter sm v)
 handleEvent raftNodeState@(RaftNodeState initNodeState) transitionEnv persistentState event =
     -- Rules for all servers:
     case handleNewerRPCTerm of
@@ -38,7 +38,7 @@ handleEvent raftNodeState@(RaftNodeState initNodeState) transitionEnv persistent
           (ResultState _ resultState, persistentState'', outputs') ->
             (RaftNodeState resultState, persistentState'', outputs <> outputs')
   where
-    handleNewerRPCTerm :: (RaftNodeState s, PersistentState, TransitionWriter sm v)
+    handleNewerRPCTerm :: (RaftNodeState, PersistentState, TransitionWriter sm v)
     handleNewerRPCTerm =
       case event of
         MessageEvent (RPCMessageEvent (RPCMessage _ rpc)) ->

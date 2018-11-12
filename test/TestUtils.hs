@@ -10,26 +10,26 @@ import qualified Data.Map.Merge.Lazy as Merge
 
 import Raft
 
-isRaftLeader :: RaftNodeState v -> Bool
+isRaftLeader :: RaftNodeState -> Bool
 isRaftLeader (RaftNodeState rns) = isLeader rns
 
-isRaftCandidate :: RaftNodeState v -> Bool
+isRaftCandidate :: RaftNodeState -> Bool
 isRaftCandidate (RaftNodeState rns) = isCandidate rns
 
-isRaftFollower :: RaftNodeState v -> Bool
+isRaftFollower :: RaftNodeState -> Bool
 isRaftFollower (RaftNodeState rns) = isFollower rns
 
-checkCurrentLeader :: RaftNodeState v -> CurrentLeader
+checkCurrentLeader :: RaftNodeState -> CurrentLeader
 checkCurrentLeader (RaftNodeState (NodeFollowerState FollowerState{..})) = fsCurrentLeader
 checkCurrentLeader (RaftNodeState (NodeCandidateState _)) = NoLeader
 checkCurrentLeader (RaftNodeState (NodeLeaderState _)) = NoLeader
 
-getLastAppliedLog :: RaftNodeState v -> Index
+getLastAppliedLog :: RaftNodeState -> Index
 getLastAppliedLog (RaftNodeState (NodeFollowerState FollowerState{..})) = fsLastApplied
 getLastAppliedLog (RaftNodeState (NodeCandidateState CandidateState{..})) = csLastApplied
 getLastAppliedLog (RaftNodeState (NodeLeaderState LeaderState{..})) = lsLastApplied
 
-getCommittedLogIndex :: RaftNodeState v -> Index
+getCommittedLogIndex :: RaftNodeState -> Index
 getCommittedLogIndex (RaftNodeState (NodeFollowerState FollowerState{..})) = fsCommitIndex
 getCommittedLogIndex (RaftNodeState (NodeCandidateState CandidateState{..})) = csCommitIndex
 getCommittedLogIndex (RaftNodeState (NodeLeaderState LeaderState{..})) = lsCommitIndex
