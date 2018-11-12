@@ -34,6 +34,11 @@ dependencies:
 - haskeline
 - parsec
 - attoparsec
+- network-simple
+- bytestring
+- word8
+- network
+- directory
 
 default-extensions:
   NoImplicitPrelude
@@ -42,7 +47,7 @@ default-extensions:
 
 library:
   source-dirs: src
-  ghc-options: 
+  ghc-options:
   - -fwarn-unused-binds
   - -fwarn-unused-imports
 
@@ -56,11 +61,7 @@ executables:
     - -with-rtsopts=-N
     dependencies:
     - raft
-    - network
-    - network-simple
-    - bytestring
     - stm
-    - word8
 
 tests:
   raft-test:

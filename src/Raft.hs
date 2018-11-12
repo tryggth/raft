@@ -51,6 +51,7 @@ module Raft
   , RaftReadLog (..)
   , RaftLog
   , RaftLogError(..)
+  , RaftLogExceptions(..)
   , updateLog
 
   -- Monad

@@ -44,13 +44,13 @@ class Monad m => RaftWriteLog m v where
     => Entries v -> m (Either (RaftWriteLogError m) ())
 
 -- | The type class specifying how nodes should delete log entries from storage.
-class Monad m => RaftDeleteLog m where
+class Monad m => RaftDeleteLog m v where
   type RaftDeleteLogError m
   -- | Delete log entries from a given index; e.g. 'deleteLogEntriesFrom 7'
   -- should delete every log entry
   deleteLogEntriesFrom
     :: Exception (RaftDeleteLogError m)
-    => Index -> m (Either (RaftDeleteLogError m) ())
+    => Index -> m (Either (RaftDeleteLogError m) (Maybe (Entry v)))
 
 -- | The type class specifying how nodes should read log entries from storage.
 class Monad m => RaftReadLog m v where
@@ -90,7 +90,7 @@ class Monad m => RaftReadLog m v where
               Right Nothing -> panic "Malformed log"
               Right (Just logEntry) -> fmap (|> logEntry) <$>  go (decrIndex idx')
 
-type RaftLog m v = (RaftReadLog m v, RaftWriteLog m v, RaftDeleteLog m)
+type RaftLog m v = (RaftReadLog m v, RaftWriteLog m v, RaftDeleteLog m v)
 type RaftLogExceptions m = (Exception (RaftReadLogError m), Exception (RaftWriteLogError m), Exception (RaftDeleteLogError m))
 
 data RaftLogError m where
@@ -99,7 +99,7 @@ data RaftLogError m where
   RaftLogDeleteError :: RaftDeleteLogError m -> RaftLogError m
 
 updateLog
-  :: ( RaftDeleteLog m, Exception (RaftDeleteLogError m)
+  :: forall m v. ( RaftDeleteLog m v, Exception (RaftDeleteLogError m)
      , RaftWriteLog m v, Exception (RaftWriteLogError m)
      )
   => Entries v
@@ -108,7 +108,8 @@ updateLog entries =
   case entries of
     Empty -> pure (Right ())
     e :<| _ -> do
+      -- TODO: This does not look right
       eDel <- deleteLogEntriesFrom (entryIndex e)
       case eDel of
         Left err -> pure (Left (RaftLogDeleteError err))
-        Right _ -> first RaftLogWriteError <$> writeLogEntries entries
+        Right (_ :: Maybe (Entry v))-> first RaftLogWriteError <$> writeLogEntries entries
