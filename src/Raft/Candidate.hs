@@ -96,7 +96,7 @@ handleRequestVoteResponse (NodeCandidateState candidateState@CandidateState{..})
            (,incrIndex lastLogEntryIdx) <$> Set.toList cNodeIds
        , lsMatchIndex = Map.fromList $
            (,index0) <$> Set.toList cNodeIds
-       -- ^ We use index0 as the new leader doesn't know yet what
+       -- We use index0 as the new leader doesn't know yet what
        -- the highest log has been seen by other nodes
        , lsLastLogEntryData = (lastLogEntryIdx, lastLogEntryTerm, Nothing)
        }

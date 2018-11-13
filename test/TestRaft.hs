@@ -164,10 +164,8 @@ instance RaftWriteLog RTLog StoreCmd where
   writeLogEntries newEntries = do
     nid <- ask
     Just log <- Map.lookup nid <$> gets testNodeLogs
-    modify $ \testState@TestState{..} ->
+    fmap Right $ modify $ \testState@TestState{..} ->
       testState { testNodeLogs = Map.insert nid (log Seq.>< newEntries) testNodeLogs }
-    pure $ pure ()
-
 
 instance RaftReadLog RTLog StoreCmd where
   type RaftReadLogError RTLog = NodeEnvError
@@ -184,14 +182,13 @@ instance RaftReadLog RTLog StoreCmd where
       Seq.Empty -> pure (Right Nothing)
       (_ Seq.:|> e) -> pure (Right (Just e))
 
-instance RaftDeleteLog RTLog where
+instance RaftDeleteLog RTLog StoreCmd where
   type RaftDeleteLogError RTLog = NodeEnvError
   deleteLogEntriesFrom idx = do
     nid <- ask
     Just log <- Map.lookup nid <$> gets testNodeLogs
-    modify $ \testState@TestState{..} ->
+    fmap (const (Right Nothing)) $ modify $ \testState@TestState{..} ->
       testState { testNodeLogs = Map.insert nid (Seq.dropWhileR ((>= idx) . entryIndex) log) testNodeLogs }
-    pure $ pure ()
 
 -------------------------------
 -- Handle actions and events --

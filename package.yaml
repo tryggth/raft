@@ -1,6 +1,6 @@
 name:                raft
 version:             0.1.0.0
-github:              "githubuser/raft"
+github:              "adjoint-io/raft"
 license:             BSD3
 author:              "Author name here"
 maintainer:          "example@example.com"
@@ -17,7 +17,7 @@ extra-source-files:
 # To avoid duplicated efforts in documentation and dealing with the
 # complications of embedding Haddock markup inside cabal files, it is
 # common to point users to the README.md file.
-description:         Please see the README on GitHub at <https://github.com/githubuser/raft#readme>
+description:         Please see the README on GitHub at <https://github.com/adjoint-io/raft#readme>
 
 dependencies:
 - base >= 4.7 && < 5
@@ -35,6 +35,11 @@ dependencies:
 - parsec
 - attoparsec
 - time
+- network-simple
+- bytestring
+- word8
+- network
+- directory
 
 default-extensions:
   NoImplicitPrelude
@@ -43,7 +48,7 @@ default-extensions:
 
 library:
   source-dirs: src
-  ghc-options: 
+  ghc-options:
   - -fwarn-unused-binds
   - -fwarn-unused-imports
 
@@ -57,11 +62,7 @@ executables:
     - -with-rtsopts=-N
     dependencies:
     - raft
-    - network
-    - network-simple
-    - bytestring
     - stm
-    - word8
 
 tests:
   raft-test:

@@ -1,5 +1,4 @@
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE StandaloneDeriving #-}
 
 module Raft.Client where
 
@@ -48,4 +47,7 @@ data ClientRedirResp
   deriving (Show, Generic)
 
 instance S.Serialize ClientRedirResp
+
+
+
 
