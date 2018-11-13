@@ -9,16 +9,9 @@
 module TestDejaFu where
 
 import Protolude
-import qualified Data.Sequence as Seq
-import Data.Sequence (Seq(..), (<|), (|>))
 import qualified Data.Map as Map
-import qualified Data.Set as Set
 import qualified Data.Serialize as S
 import Numeric.Natural
-
-import qualified Test.Tasty.HUnit as HUnit
-
-import TestUtils
 
 import Raft
 
