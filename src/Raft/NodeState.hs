@@ -71,6 +71,13 @@ leaderResultState transition lstate =
 data RaftNodeState where
   RaftNodeState :: { unRaftNodeState :: NodeState s } -> RaftNodeState
 
+nodeMode :: RaftNodeState -> Mode
+nodeMode (RaftNodeState rns) =
+  case rns of
+    NodeFollowerState _ -> Follower
+    NodeCandidateState _ -> Candidate
+    NodeLeaderState _ -> Leader
+
 -- TODO Take term last long entry term and index as argument
 initRaftNodeState :: RaftNodeState
 initRaftNodeState =

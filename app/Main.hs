@@ -41,6 +41,7 @@ import System.Console.Haskeline.MonadException hiding (handle)
 import Text.Read
 
 import Raft
+import Raft.Logging
 
 --------------------------------------------------------------------------------
 -- State Machine & Commands
@@ -189,7 +190,7 @@ retryConnection tNodeSocketPeers nid sockM msg e =  case sockM of
       pure $ Just sock
   where
     (host, port) = nidToHostPort nid
-    
+
 handleFailure
   :: TVar (STM IO) (Map NodeId Socket)
   -> [NodeId]
@@ -366,7 +367,7 @@ main = do
           tNodeSocketPeers <- asks nodeEnvSocketPeers
           liftIO $ acceptForkNode nodeSock selfNid tNodeSocketPeers msgQueue clientSockets clientReqQueue
           electionTimerSeed <- liftIO randomIO
-          runRaftNode nodeConfig electionTimerSeed (mempty :: Store) print
+          runRaftNode nodeConfig LogStdout electionTimerSeed (mempty :: Store)
   where
     -- | Recursively accept a connection.
     -- It keeps trying to accept connections even when a node dies
