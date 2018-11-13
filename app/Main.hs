@@ -177,9 +177,9 @@ handleConsoleCmd input = do
   let clientSocketEnv = RS.ClientSocketEnv clientPort clientHost clientSocket
   case L.words input of
     ["addNode", nid] -> modify (\st -> st { csNodeIds = Set.insert (toS nid) (csNodeIds st) })
-    ["getNodes"] -> traceM (show nids)
+    ["getNodes"] -> print nids
     ["read"] -> if nids == Set.empty
-      then traceM "Please add some nodes to query first. Eg. `addNode localhost:3001`"
+      then putText "Please add some nodes to query first. Eg. `addNode localhost:3001`"
       else do
         respE <- liftIO $ RS.runRaftSocketClientM clientSocketEnv $ case leaderIdM of
           Nothing -> RS.sendReadRndNode (Proxy :: Proxy StoreCmd) nids
@@ -205,16 +205,16 @@ handleConsoleCmd input = do
         Right (ClientRedirectResponse (ClientRedirResp leader)) ->
           case leader of
             NoLeader -> do
-              traceM $ "Sorry, the system doesn't have a leader at the moment"
+              putText "Sorry, the system doesn't have a leader at the moment"
               liftIO $ atomically $ writeTVar leaderIdT Nothing
             -- If the message was not sent to the leader, that node will
             -- point to the current leader
             CurrentLeader lid -> do
-              print $ "New leader found: " ++ show lid
+              putText $ "New leader found: " <> show lid
               liftIO $ atomically $ writeTVar leaderIdT (Just lid)
               handleConsoleCmd input
-        Right (ClientReadResponse (ClientReadResp sm)) ->  traceM $ "Received sm: " <> show sm
-        Right (ClientWriteResponse writeResp) -> traceM (show writeResp)
+        Right (ClientReadResponse (ClientReadResp sm)) -> putText $ "Received sm: " <> show sm
+        Right (ClientWriteResponse writeResp) -> print writeResp
 
 
 main :: IO ()
@@ -240,12 +240,7 @@ main = do
                             }
           RaftExampleM $ lift acceptForkNode :: RaftExampleM Store StoreCmd ()
           electionTimerSeed <- liftIO randomIO
-<<<<<<< HEAD
           runRaftNode nodeConfig LogStdout electionTimerSeed (mempty :: Store)
-=======
-          runRaftNode nodeConfig electionTimerSeed (mempty :: Store) print
-
->>>>>>> master
   where
     initPersistentFile :: NodeId -> IO ()
     initPersistentFile nid = do
