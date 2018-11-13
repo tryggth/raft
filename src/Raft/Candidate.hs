@@ -126,7 +126,7 @@ stepDown
   -> Index
   -> Index
   -> (Index, Term)
-  -> TransitionM a sm (ResultState 'Candidate v)
+  -> TransitionM a sm (ResultState 'Candidate)
 stepDown sender term commitIndex lastApplied lastLogEntryData = do
   send sender $
     SendRequestVoteResponseRPC $

@@ -85,9 +85,9 @@ askNodeId = asks (configNodeId . nodeConfig)
 -- Handlers
 --------------------------------------------------------------------------------
 
-type RPCHandler ns sm r v = RPCType r v => NodeState ns -> NodeId -> r -> TransitionM sm v (ResultState ns v)
-type TimeoutHandler ns sm v = NodeState ns -> Timeout -> TransitionM sm v (ResultState ns v)
-type ClientReqHandler ns sm v = NodeState ns -> ClientRequest v -> TransitionM sm v (ResultState ns v)
+type RPCHandler ns sm r v = RPCType r v => NodeState ns -> NodeId -> r -> TransitionM sm v (ResultState ns)
+type TimeoutHandler ns sm v = NodeState ns -> Timeout -> TransitionM sm v (ResultState ns)
+type ClientReqHandler ns sm v = NodeState ns -> ClientRequest v -> TransitionM sm v (ResultState ns)
 
 --------------------------------------------------------------------------------
 -- RWS Helpers

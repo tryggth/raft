@@ -44,7 +44,6 @@ module Raft
 
   -- Log
   , Entry(..)
-  , AppendEntryError(..)
   , Entries
   , RaftWriteLog(..)
   , RaftDeleteLog(..)

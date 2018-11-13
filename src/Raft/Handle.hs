@@ -61,7 +61,7 @@ handleEvent raftNodeState@(RaftNodeState initNodeState) transitionEnv persistent
               else pure raftNodeState
         _ -> ((raftNodeState, []), persistentState, mempty)
 
-    convertToFollower :: forall s. NodeState s -> ResultState s v
+    convertToFollower :: forall s. NodeState s -> ResultState s
     convertToFollower nodeState =
       case nodeState of
         NodeFollowerState _ ->
@@ -141,7 +141,7 @@ handleEvent'
   -> TransitionEnv sm
   -> PersistentState
   -> Event v
-  -> ((ResultState ns v, [LogMsg]), PersistentState, [Action sm v])
+  -> ((ResultState ns, [LogMsg]), PersistentState, [Action sm v])
 handleEvent' initNodeState transitionEnv persistentState event =
     runTransitionM transitionEnv persistentState $
       case event of
@@ -155,7 +155,7 @@ handleEvent' initNodeState transitionEnv persistentState event =
   where
     RaftHandler{..} = mkRaftHandler initNodeState
 
-    handleRPCMessage :: RPCMessage v -> TransitionM sm v (ResultState ns v)
+    handleRPCMessage :: RPCMessage v -> TransitionM sm v (ResultState ns)
     handleRPCMessage (RPCMessage sender rpc) =
       case rpc of
         AppendEntriesRPC appendEntries ->

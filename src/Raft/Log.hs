@@ -29,10 +29,6 @@ data Entry v = Entry
   , entryClientId :: ClientId
   } deriving (Show, Generic, Serialize)
 
-data AppendEntryError
-  = UnexpectedLogIndex Index Index
-  deriving (Show)
-
 type Entries v = Seq (Entry v)
 
 -- | The type class specifying how nodes should write log entries to storage.
