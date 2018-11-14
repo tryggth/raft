@@ -15,30 +15,32 @@ import qualified Raft.Follower as Follower
 import qualified Raft.Candidate as Candidate
 import qualified Raft.Leader as Leader
 
+import Raft.Action
 import Raft.Event
 import Raft.Monad
 import Raft.NodeState
 import Raft.Persistent
 import Raft.RPC
+import Raft.Logging (LogMsg)
 
 -- | Main entry point for handling events
 handleEvent
-  :: forall s sm v.
+  :: forall sm v.
      (StateMachine sm v, Show v)
-  => RaftNodeState s
+  => RaftNodeState
   -> TransitionEnv sm
   -> PersistentState
   -> Event v
-  -> (RaftNodeState s, PersistentState, TransitionWriter sm v)
+  -> (RaftNodeState, PersistentState, [Action sm v], [LogMsg])
 handleEvent raftNodeState@(RaftNodeState initNodeState) transitionEnv persistentState event =
     -- Rules for all servers:
     case handleNewerRPCTerm of
-      (RaftNodeState resNodeState, persistentState', outputs) ->
+      ((RaftNodeState resNodeState, logMsgs), persistentState', outputs) ->
         case handleEvent' resNodeState transitionEnv persistentState' event of
-          (ResultState _ resultState, persistentState'', outputs') ->
-            (RaftNodeState resultState, persistentState'', outputs <> outputs')
+          ((ResultState _ resultState, logMsgs'), persistentState'', outputs') ->
+            (RaftNodeState resultState, persistentState'', outputs <> outputs', logMsgs <> logMsgs')
   where
-    handleNewerRPCTerm :: (RaftNodeState s, PersistentState, TransitionWriter sm v)
+    handleNewerRPCTerm :: ((RaftNodeState, [LogMsg]), PersistentState, [Action sm v])
     handleNewerRPCTerm =
       case event of
         MessageEvent (RPCMessageEvent (RPCMessage _ rpc)) ->
@@ -57,9 +59,9 @@ handleEvent raftNodeState@(RaftNodeState initNodeState) transitionEnv persistent
                     resetElectionTimeout
                     pure (RaftNodeState nodeState)
               else pure raftNodeState
-        _ -> (raftNodeState, persistentState, mempty)
+        _ -> ((raftNodeState, []), persistentState, mempty)
 
-    convertToFollower :: forall s. NodeState s -> ResultState s v
+    convertToFollower :: forall s. NodeState s -> ResultState s
     convertToFollower nodeState =
       case nodeState of
         NodeFollowerState _ ->
@@ -139,7 +141,7 @@ handleEvent'
   -> TransitionEnv sm
   -> PersistentState
   -> Event v
-  -> (ResultState ns v, PersistentState, TransitionWriter sm v)
+  -> ((ResultState ns, [LogMsg]), PersistentState, [Action sm v])
 handleEvent' initNodeState transitionEnv persistentState event =
     runTransitionM transitionEnv persistentState $
       case event of
@@ -153,7 +155,7 @@ handleEvent' initNodeState transitionEnv persistentState event =
   where
     RaftHandler{..} = mkRaftHandler initNodeState
 
-    handleRPCMessage :: RPCMessage v -> TransitionM sm v (ResultState ns v)
+    handleRPCMessage :: RPCMessage v -> TransitionM sm v (ResultState ns)
     handleRPCMessage (RPCMessage sender rpc) =
       case rpc of
         AppendEntriesRPC appendEntries ->

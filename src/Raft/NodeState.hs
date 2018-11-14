@@ -41,38 +41,45 @@ data Transition (init :: Mode) (res :: Mode) where
 deriving instance Show (Transition init res)
 
 -- | Existential type hiding the result type of a transition
-data ResultState init v where
-  ResultState :: Transition init res -> NodeState res -> ResultState init v
+data ResultState init where
+  ResultState :: Transition init res -> NodeState res -> ResultState init
 
-deriving instance Show (ResultState init v)
+deriving instance Show (ResultState init)
 
 followerResultState
   :: Transition init 'Follower
   -> FollowerState
-  -> ResultState init v
+  -> ResultState init
 followerResultState transition fstate =
   ResultState transition (NodeFollowerState fstate)
 
 candidateResultState
   :: Transition init 'Candidate
   -> CandidateState
-  -> ResultState init v
+  -> ResultState init
 candidateResultState transition cstate =
   ResultState transition (NodeCandidateState cstate)
 
 leaderResultState
   :: Transition init 'Leader
   -> LeaderState
-  -> ResultState init v
+  -> ResultState init
 leaderResultState transition lstate =
   ResultState transition (NodeLeaderState lstate)
 
 -- | Existential type hiding the internal node state
-data RaftNodeState v where
-  RaftNodeState :: { unRaftNodeState :: NodeState s } -> RaftNodeState v
+data RaftNodeState where
+  RaftNodeState :: { unRaftNodeState :: NodeState s } -> RaftNodeState
+
+nodeMode :: RaftNodeState -> Mode
+nodeMode (RaftNodeState rns) =
+  case rns of
+    NodeFollowerState _ -> Follower
+    NodeCandidateState _ -> Candidate
+    NodeLeaderState _ -> Leader
 
 -- TODO Take term last long entry term and index as argument
-initRaftNodeState :: RaftNodeState v
+initRaftNodeState :: RaftNodeState
 initRaftNodeState =
   RaftNodeState $
     NodeFollowerState FollowerState
@@ -83,7 +90,7 @@ initRaftNodeState =
       , fsEntryTermAtAEIndex = Nothing
       }
 
-deriving instance Show (RaftNodeState v)
+deriving instance Show RaftNodeState
 
 -- | The volatile state of a Raft Node
 data NodeState (a :: Mode) where

@@ -1,146 +1,117 @@
-{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module TestDejaFu where
 
-import Protolude hiding
-  ( MVar, putMVar, takeMVar, newMVar, newEmptyMVar, readMVar
-  , atomically, STM, Chan, readTVar, writeTVar
-  , newChan, writeTChan, readTChan
-  , threadDelay, killThread
-  )
-
-import System.Random
+import Protolude
 import qualified Data.Map as Map
-import qualified Data.Set as Set
-import Data.Sequence (Seq(..), (<|))
-import qualified Data.Sequence as Seq
 import qualified Data.Serialize as S
-import Control.Monad.Reader
-import Control.Monad.Catch
-import Control.Concurrent.Classy hiding (check)
-import Control.Concurrent.Classy.STM.TVar
-import Data.Functor (void)
-import Test.DejaFu hiding (MemType(..), check)
-import Test.DejaFu.SCT
-import Test.DejaFu.Conc hiding (Stop)
-import Test.Tasty.DejaFu
-import Test.Tasty
-import TestUtils
-
 import Numeric.Natural
 
 import Raft
 
---type Var = ByteString
+--------------------------------------------------------------------------------
+-- Test State Machine & Commands
+--------------------------------------------------------------------------------
 
---data StoreCmd
-  -- = Set Var Natural
-  -- | Incr Var
-  --deriving (Show, Generic)
+type Var = ByteString
 
---instance S.Serialize StoreCmd
+data StoreCmd
+  = Set Var Natural
+  | Incr Var
+  deriving (Show, Generic)
 
---type Store = Map Var Natural
+instance S.Serialize StoreCmd
 
---instance StateMachine Store StoreCmd where
-  --applyCommittedLogEntry store cmd =
-    --case cmd of
-      --Set x n -> Map.insert x n store
-      --Incr x -> Map.adjust succ x store
+type Store = Map Var Natural
 
---initStore :: Store
---initStore = mempty
+instance StateMachine Store StoreCmd where
+  applyCommittedLogEntry store cmd =
+    case cmd of
+      Set x n -> Map.insert x n store
+      Incr x -> Map.adjust succ x store
 
----------------------
+--------------------------------------------------------------------------------
+-- Test Raft Scenarios
+--
+--   We want the 'RaftTestM' monad to encapsulate all state for every node in
+--   the network. This includes datastructures for each node such as:
+--     - the list or sequence representing the communication link used for
+--       receiving messages from other nodes
+--     - the event TChan (*)
+--     - the replicated log
+--     - the persistent state
+--     - the client responses if the node was leader
+--   and the read only environement for each node:
+--     - the node config
+--
+--   For the 'RaftTestM' monad, most node interaction will happen in a pure way,
+--   specified by the type class instances implemented for the monad as required
+--   by the Raft library interface (but only the ones in 'runRaftNode'',
+--   transitively from 'handleEventLoop')! These pure interfaces will look a lot
+--   like the existing implementation details of the tests in 'test/TestRaft.hs`
+--   There will, however, be a single impure component of this implementation:
+--   under the hood, the raft library's core event handler loop fixes a 'TChan'
+--   as the main event queue (for the moment), and thus we must use IO to fork
+--   threads to run instances of raft nodes, such that they can progress via
+--   `handleEvent` state machine steps called by each iteration of
+--   `handleEventLoop` in which a thread blocking read on the event queue is
+--   called.
 
---type NodeChanMap m = Map NodeId (TChan (STM m) (RPCMessage StoreCmd))
-
---type ClientResponsesChan m = TChan (STM m) (ClientResponse Store)
---type ClientRequestsChan m = TChan (STM m) (ClientRequest StoreCmd)
-
---data TestEnv m = TestEnv
-  --{ store :: TVar (STM m) Store
-  --, pstate :: TVar (STM m) (PersistentState StoreCmd)
-  --, nodes :: NodeChanMap m
-  --, nid :: NodeId
-  --, clientResps :: ClientResponsesChan m
-  --, clientReqs :: ClientRequestsChan m
-  --}
-
---newtype TestEnvT m a = TestEnvT { unTestEnvT :: ReaderT (TestEnv m) m a }
-  --deriving (Functor, Applicative, Monad, MonadReader (TestEnv m), Alternative, MonadPlus)
-
---runTestEnvT :: TestEnv m -> TestEnvT m a -> m a
---runTestEnvT testEnv = flip runReaderT testEnv . unTestEnvT
-
---instance MonadTrans TestEnvT where
-  --lift = TestEnvT . lift
-
---deriving instance MonadThrow m => MonadThrow (TestEnvT m)
---deriving instance MonadCatch m => MonadCatch (TestEnvT m)
---deriving instance MonadSTM m => MonadSTM (TestEnvT m)
---deriving instance MonadMask m => MonadMask (TestEnvT m)
---deriving instance MonadConc m => MonadConc (TestEnvT m)
-
---instance MonadConc m => RaftPersist (TestEnvT m) StoreCmd where
-  --savePersistentState pstate' = asks pstate >>= atomically . flip writeTVar pstate'
-  --loadPersistentState = asks pstate >>= atomically . readTVar
-
---instance MonadConc m => RaftSendRPC (TestEnvT m) StoreCmd where
-  --sendRPC nid msg = do
-    --nodeChanMap <- asks nodes
-    --case Map.lookup nid nodeChanMap of
-      --Nothing -> panic $ toS $ "SendRPC: " ++ show nid ++ " .Wtf bro"
-      --Just c -> atomically $ writeTChan c msg
-
---instance MonadConc m => RaftRecvRPC (TestEnvT m) StoreCmd where
-  --receiveRPC = do
-    --myNodeId <- asks nid
-    --nodeChanMap <- asks nodes
-    --case Map.lookup myNodeId nodeChanMap of
-      --Nothing -> panic $ toS $ "RecvRPC: " ++ show myNodeId ++ " .Wtf bro"
-      --Just c -> atomically $ readTChan c
-
---instance MonadConc m => RaftSendClient (TestEnvT m) Store where
-  --sendClient cid resp = do
-    --clientRespsChan <- asks clientResps
-    --lift $ atomically $ writeTChan clientRespsChan resp
-
---instance MonadConc m => RaftRecvClient (TestEnvT m) StoreCmd where
-  --receiveClient = atomically . readTChan =<< asks clientReqs
-
---mkNodeTestEnv :: MonadConc m => NodeId -> NodeChanMap m -> m (TestEnv m)
---mkNodeTestEnv nid nodesChan = do
-  --newStore <- atomically $ newTVar initStore
-  --clientReqsChan <- atomically newTChan
-  --clientRespsChan <- atomically newTChan
-  --newPersistentState <- atomically $ newTVar initPersistentState
-  --pure TestEnv
-    --{ store = newStore
-    --, pstate = newPersistentState
-    --, nodes = nodesChan
-    --, nid = nid
-    --, clientResps = clientRespsChan
-    --, clientReqs = clientReqsChan
-    --}
-
---test_dejafu :: TestTree
---test_dejafu = testAuto $ do
-
-  --electionTimerSeed <- liftIO randomIO
-  --nodeChans <- replicateM 2 (atomically newTChan)
-  --let nodeChanMap = Map.fromList $ zip [node0, node1] nodeChans
-
-  --testEnv0 <- mkNodeTestEnv node0 nodeChanMap
-  --testEnv1 <- mkNodeTestEnv node1 nodeChanMap
-  --let testConfig0' = testConfig0 { configNodeIds = Set.fromList [node0, node1] }
-  --let testConfig1' = testConfig1 { configNodeIds = Set.fromList [node0, node1] }
-
-  --fork $ runTestEnvT testEnv0 (runRaftNode testConfig0' electionTimerSeed initStore (const $ pure ()))
-  --fork $ runTestEnvT testEnv1 (runRaftNode testConfig1' electionTimerSeed initStore (const $ pure ()))
-
+--    Pure Interfaces:
+--    ----------------
+--      - RaftSendRPC
+--      - RaftSendClient
+--      - RaftPersist
+--      - RaftLog
+--
+--    Impure Interfaces:
+--    ------------------
+--      - Controlled writes to nodes' event queues.
+--
+--
+--    [note]:
+--
+--        Perhaps it _would_ be best to expose an event queue record or pair of
+--        typeclasses parameterized by the underlying monad, exposing a
+--        enqueue/dequeue interface such that the raft node can be run in pure
+--        environments.
+--
+--        Furthermore, we could provide typeclasses or record fields to the
+--        'runRaftNode' function specifiying the necessary timer behaviors
+--        'startTimer', 'waitTimer', and 'resetTimer'.
+--
+--        These changes would result in _all_ event producers being configurable
+--        by the user, instead of only the receiving of RPC messages. I'm not
+--        sure if this is the best option, thus the questions remain:
+--          > Is this type class overload?
+--          > Are we leaving too many options to the user (programmer)?
+--          > Which event producers are most important to be configurable?
+--          > Which event producers would users want to configure?
+--
+--
+--
+--  TODO
+--
+--    Before implementation starts, we need to have a good approach to the
+--    following roadblocks:
+--
+--      - Since timers are directly tied to the `handleAction` step of the main
+--        `handleEventLoop`, we need to decide how to circumvent the
+--        `runRaftNode` function's forced creation of timers.
+--
+--      - We need to write an intermediate `runRaftNode'` function that either
+--        exposes the event 'TChan' that is used in the main `handleEventLoop` or
+--        takes an event `TChan` as an argument so that the test module has
+--        access to the event channel for manual placement of events.
+--
+--      - ... Alberto and I should discuss this implementation and decide if
+--        the previous listed roadblocks are the only ones that need to be
+--        crossed.
+--
+--------------------------------------------------------------------------------

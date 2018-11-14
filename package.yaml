@@ -34,6 +34,7 @@ dependencies:
 - haskeline
 - parsec
 - attoparsec
+- time
 - network-simple
 - bytestring
 - word8
