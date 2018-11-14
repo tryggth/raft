@@ -48,7 +48,6 @@ import qualified Examples.Raft.Socket.Common as RS
 
 import Examples.Raft.FileStore
 import Raft
-import Raft.Logging
 
 ------------------------------
 -- State Machine & Commands --
@@ -199,7 +198,7 @@ handleConsoleCmd input = do
 
   where
     handleClientResponseE :: [Char] -> Either [Char] (ClientResponse Store) -> TVar (STM IO) (Maybe LeaderId) -> ConsoleM ()
-    handleClientResponseE input eMsgE leaderIdT = do
+    handleClientResponseE input eMsgE leaderIdT =
       case eMsgE of
         Left err -> panic $ toS err
         Right (ClientRedirectResponse (ClientRedirResp leader)) ->

@@ -53,6 +53,10 @@ module Raft
   , RaftLogExceptions(..)
   , updateLog
 
+  -- Logging
+  , LogDest(..)
+  , Severity(..)
+
   -- Monad
   , StateMachine(..)
   , LogMsg(..)
