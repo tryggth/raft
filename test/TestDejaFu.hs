@@ -24,11 +24,14 @@ import Control.Monad.Conc.Class
 import Control.Concurrent.Classy.STM.TChan
 
 import Test.DejaFu hiding (get, ThreadId)
+import Test.DejaFu.Internal (Settings(..))
 import Test.DejaFu.Conc hiding (ThreadId)
 import Test.Tasty
 import Test.Tasty.DejaFu hiding (get)
 import qualified Test.HUnit.DejaFu as HUnit
 import qualified Test.Tasty.HUnit as HUnit
+
+import System.Random (mkStdGen)
 
 import TestUtils
 
@@ -125,8 +128,7 @@ instance RaftPersist RaftTestM where
       case Map.lookup nid testState of
         Nothing -> testState
         Just testNodeState -> do
-          let pstate = testNodePersistentState testNodeState
-              newTestNodeState = testNodeState { testNodePersistentState = pstate' }
+          let newTestNodeState = testNodeState { testNodePersistentState = pstate' }
           Map.insert nid newTestNodeState testState
   readPersistentState = do
     nid <- askSelfNodeId
@@ -168,9 +170,12 @@ instance RaftDeleteLog RaftTestM StoreCmd where
 
 instance RaftReadLog RaftTestM StoreCmd where
   type RaftReadLogError RaftTestM = RaftTestError
-  readLogEntry (Index idx) = do
+  readLogEntry (Index idx') = do
+    let idx = if idx' == 0 then 0 else pred idx'
     log <- fmap testNodeLog . getNodeState =<< askSelfNodeId
-    pure $ Right (log !? fromIntegral idx)
+    case log !? fromIntegral idx of
+      Nothing -> traceM (show log) >> pure (Right Nothing)
+      Just e -> pure (Right $ Just e)
   readLastLogEntry = do
     log <- fmap testNodeLog . getNodeState =<< askSelfNodeId
     case log of
@@ -207,7 +212,7 @@ runTestNode testEnv testState =
   where
     nid = configNodeId (testNodeConfig testEnv)
     Just eventChan = Map.lookup nid (testNodeEventChans testEnv)
-    raftEnv = RaftEnv eventChan dummyTimer dummyTimer (testNodeConfig testEnv) LogStdout
+    raftEnv = RaftEnv eventChan dummyTimer dummyTimer (testNodeConfig testEnv) NoLogs
     dummyTimer = pure ()
 
 forkTestNodes :: [TestNodeEnv] -> TestNodeStates -> ConcIO [ThreadId ConcIO]
@@ -216,28 +221,83 @@ forkTestNodes testEnvs testStates =
 
 --------------------------------------------------------------------------------
 
--- test_concurrency2 =
--- [ HUnit.testDejafu "deadlocks" deadlocksNever initProtocol ]
+type TestEventChans = Map NodeId TestEventChan
+type TestClientRespChans = Map ClientId TestClientRespChan
 
--- test_concurrency :: [TestTree]
--- test_concurrency =
---     [ testDejafu{-Way (boundedWay 100) defaultMemType-} "deadlocks" deadlocksNever initProtocol ]
---   where
---     boundedWay :: LengthBound -> Way
---     boundedWay n = systematically defaultBounds { boundLength = Just n }
+test_concurrency :: [TestTree]
+test_concurrency =
+    [ testGroup "Leader Election" [ noDeadlocksAndExpectedRes leaderElection mempty ]
+    , testGroup "incr(incr(set 'x' 40)) == x := 42"
+        [ noDeadlocksAndExpectedRes incrValue (Map.fromList [("x", 42)], Index 3) ]
+    ]
+  where
+    settings = defaultSettings
+      { _discard = Nothing -- Just $ \efa -> Just DiscardTrace -- (if either isDeadlock (const False) efa then DiscardTrace else DiscardResultAndTrace)
+      , _way = randomly (mkStdGen 42) 1
+      }
 
-initProtocol :: ConcIO Store
-initProtocol = do
-  (eventChans, clientRespChans) <- initTestChanMaps
-  let (testNodeEnvs, testNodeStates) = initRaftTestEnvs eventChans clientRespChans
-  tids <- forkTestNodes testNodeEnvs testNodeStates
-  let Just node0EventChan = Map.lookup node0 eventChans
-  atomically $ writeTChan node0EventChan (TimeoutEvent ElectionTimeout)
-  atomically $ writeTChan node0EventChan $ MessageEvent $
-    ClientRequestEvent $ ClientRequest client0 ClientReadReq
-  -- res <- readMVar =<<
-  --   spawn (pollStateMachine client0 node0EventChan client0RespChan)
-  let Just client0RespChan = Map.lookup client0 clientRespChans
-  ClientReadResponse (ClientReadResp res) <- atomically $ readTChan client0RespChan
-  mapM_ killThread tids
-  pure res
+    noDeadlocksAndExpectedRes :: (Eq a, Show a) => (TestEventChans -> TestClientRespChans -> ConcIO a) -> a -> TestTree
+    noDeadlocksAndExpectedRes test expected =
+      testDejafusWithSettings settings
+        [ ("No deadlocks", deadlocksNever)
+        , ("Success", alwaysTrue (== Right expected))
+        ] $ concurrencyTest test
+
+concurrencyTest :: (TestEventChans -> TestClientRespChans -> ConcIO a) -> ConcIO a
+concurrencyTest runTest =
+    Control.Monad.Catch.bracket setup teardown $
+      uncurry runTest . snd
+  where
+    setup = do
+      (eventChans, clientRespChans) <- initTestChanMaps
+      let (testNodeEnvs, testNodeStates) = initRaftTestEnvs eventChans clientRespChans
+      tids <- forkTestNodes testNodeEnvs testNodeStates
+      pure (tids, (eventChans, clientRespChans))
+
+    teardown = mapM_ killThread . fst
+
+leaderElection :: TestEventChans -> TestClientRespChans -> ConcIO Store
+leaderElection eventChans clientRespChans = do
+    atomically $ writeTChan node0EventChan (TimeoutEvent ElectionTimeout)
+    pollForReadResponse node0EventChan client0RespChan
+  where
+    Just node0EventChan = Map.lookup node0 eventChans
+    Just client0RespChan = Map.lookup client0 clientRespChans
+
+incrValue :: TestEventChans -> TestClientRespChans -> ConcIO (Store, Index)
+incrValue eventChans clientRespChans = do
+    leaderElection eventChans clientRespChans
+    ClientWriteResponse (ClientWriteResp idx) <- do
+      atomically $ writeTChan node0EventChan $ clientWriteReq client0 (Set "x" 40)
+      atomically $ readTChan client0RespChan
+    ClientWriteResponse (ClientWriteResp _) <- do
+      atomically $ writeTChan node0EventChan $ clientWriteReq client0 (Incr "x")
+      atomically $ readTChan client0RespChan
+    -- ClientWriteResponse (ClientWriteResp idx) <- do
+    --   atomically $ writeTChan node0EventChan $ clientWriteReq client0 (Incr "x")
+    --   atomically $ readTChan client0RespChan
+    store <- pollForReadResponse node0EventChan client0RespChan
+    pure (store, idx)
+  where
+    Just node0EventChan = Map.lookup node0 eventChans
+    Just client0RespChan = Map.lookup client0 clientRespChans
+
+--------------------------------------------------------------------------------
+-- Helpers
+--------------------------------------------------------------------------------
+
+pollForReadResponse :: TestEventChan -> TestClientRespChan -> ConcIO Store
+pollForReadResponse nodeEventChan clientRespChan = do
+  -- Warning: Do not change the separate "atomically" calls, or you may
+  -- introduce a deadlock
+  atomically $ writeTChan nodeEventChan $ clientReadReq client0
+  res <- atomically $ readTChan clientRespChan
+  case res of
+    ClientReadResponse (ClientReadResp res) -> pure res
+    _ -> pollForReadResponse nodeEventChan clientRespChan
+
+clientReadReq :: ClientId -> Event StoreCmd
+clientReadReq cid = MessageEvent $ ClientRequestEvent $ ClientRequest cid ClientReadReq
+
+clientWriteReq :: ClientId -> StoreCmd -> Event StoreCmd
+clientWriteReq cid v = MessageEvent $ ClientRequestEvent $ ClientRequest cid $ ClientWriteReq v

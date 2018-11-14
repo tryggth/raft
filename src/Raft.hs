@@ -370,7 +370,7 @@ handleAction nodeConfig action = do
             (entries, prevLogIndex, prevLogTerm) <-
               case aedEntriesSpec aeData of
                 FromIndex idx -> do
-                  eLogEntries <- lift (readLogEntriesFrom (decrIndex idx))
+                  eLogEntries <- lift (readLogEntriesFrom idx)
                   case eLogEntries of
                     Left err -> throw err
                     Right log ->
@@ -382,7 +382,7 @@ handleAction nodeConfig action = do
                 FromClientReq e -> do
                   if entryIndex e /= Index 1
                     then do
-                      eLogEntry <- lift $ readLogEntry (decrIndex (entryIndex e))
+                      eLogEntry <- lift $ readLogEntry (entryIndex e)
                       case eLogEntry of
                         Left err -> throw err
                         Right Nothing -> pure (singleton e, index0, term0)
@@ -422,8 +422,7 @@ applyLogEntries
   -> RaftT v m sm
 applyLogEntries stateMachine = do
     raftNodeState@(RaftNodeState nodeState) <- get
-    let lastAppliedIndex = lastApplied nodeState
-    if commitIndex nodeState > lastAppliedIndex
+    if commitIndex nodeState > lastApplied nodeState
       then do
         let resNodeState = incrLastApplied nodeState
         put $ RaftNodeState resNodeState

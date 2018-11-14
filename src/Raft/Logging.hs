@@ -18,6 +18,7 @@ import Raft.Types
 data LogDest
   = LogFile FilePath
   | LogStdout
+  | NoLogs
 
 data Severity
   = Info
@@ -73,6 +74,7 @@ logToDest logDest logMsg =
   case logDest of
     LogStdout -> putText (logMsgToText logMsg)
     LogFile fp -> liftIO $ appendFile fp (logMsgToText logMsg)
+    NoLogs -> pure ()
 
 logToStdout :: MonadIO m => LogMsg -> m ()
 logToStdout = logToDest LogStdout
