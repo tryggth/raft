@@ -50,21 +50,24 @@ module Raft
 
   -- Log
   , Entry(..)
-  , AppendEntryError(..)
   , Entries
   , RaftWriteLog(..)
+  , DeleteSuccess(..)
   , RaftDeleteLog(..)
   , RaftReadLog (..)
   , RaftLog
   , RaftLogError(..)
+  , RaftLogExceptions(..)
   , updateLog
+
+  -- Logging
+  , LogDest(..)
+  , Severity(..)
 
   -- Monad
   , StateMachine(..)
   , LogMsg(..)
-  , LogMsgs
   , TransitionEnv(..)
-  , TransitionWriter(..)
   , TransitionM(..)
 
   -- NodeState
@@ -132,7 +135,8 @@ import Raft.Config
 import Raft.Event
 import Raft.Handle
 import Raft.Log
-import Raft.Monad
+import Raft.Logging hiding (logInfo, logDebug)
+import Raft.Monad hiding (logInfo, logDebug)
 import Raft.NodeState
 import Raft.Persistent
 import Raft.RPC
@@ -162,34 +166,46 @@ data RaftEnv v m = RaftEnv
   { eventChan :: EventChan m v
   , resetElectionTimer :: m ()
   , resetHeartbeatTimer :: m ()
+  , raftNodeConfig :: NodeConfig
+  , raftNodeLogDest :: LogDest
   }
 
-newtype RaftT s v m a = RaftT
-  { unRaftT :: ReaderT (RaftEnv v m) (StateT (RaftNodeState s) m) a
-  } deriving (Functor, Applicative, Monad, MonadReader (RaftEnv v m), MonadState (RaftNodeState s), Alternative, MonadPlus)
+newtype RaftT v m a = RaftT
+  { unRaftT :: ReaderT (RaftEnv v m) (StateT RaftNodeState m) a
+  } deriving (Functor, Applicative, Monad, MonadReader (RaftEnv v m), MonadState RaftNodeState, Alternative, MonadPlus)
 
-instance MonadTrans (RaftT s m) where
+instance MonadTrans (RaftT v) where
   lift = RaftT . lift . lift
 
-deriving instance MonadThrow m => MonadThrow (RaftT s v m)
-deriving instance MonadCatch m => MonadCatch (RaftT s v m)
-deriving instance MonadMask m => MonadMask (RaftT s v m)
-deriving instance MonadConc m => MonadConc (RaftT s v m)
+deriving instance MonadIO m => MonadIO (RaftT v m)
+deriving instance MonadThrow m => MonadThrow (RaftT v m)
+deriving instance MonadCatch m => MonadCatch (RaftT v m)
+deriving instance MonadMask m => MonadMask (RaftT v m)
+deriving instance MonadConc m => MonadConc (RaftT v m)
+
+instance Monad m => RaftLogger (RaftT v m) where
+  loggerNodeId = asks (configNodeId . raftNodeConfig)
+  loggerNodeState = get
 
 runRaftT
   :: MonadConc m
-  => RaftNodeState s
+  => RaftNodeState
   -> RaftEnv v m
-  -> RaftT s v m ()
+  -> RaftT v m ()
   -> m ()
 runRaftT raftNodeState raftEnv =
   flip evalStateT raftNodeState . flip runReaderT raftEnv . unRaftT
 
 ------------------------------------------------------------------------------
 
+logDebug :: MonadIO m => Text -> RaftT v m ()
+logDebug msg = flip logDebugIO msg =<< asks raftNodeLogDest
+
+------------------------------------------------------------------------------
+
 runRaftNode
   :: ( Show v, Show sm, Show (Action sm v)
-     , MonadConc m
+     , MonadIO m, MonadConc m
      , StateMachine sm v
      , RaftSendRPC m v
      , RaftRecvRPC m v
@@ -201,11 +217,11 @@ runRaftNode
      , Exception (RaftPersistError m)
      )
    => NodeConfig
+   -> LogDest
    -> Int
    -> sm
-   -> (LogMsg -> m ())
    -> m ()
-runRaftNode nodeConfig@NodeConfig{..} timerSeed initStateMachine logger = do
+runRaftNode nodeConfig@NodeConfig{..} logDest timerSeed initStateMachine = do
   eventChan <- atomically newTChan
 
   electionTimer <- newTimerRange timerSeed configElectionTimeout
@@ -217,18 +233,17 @@ runRaftNode nodeConfig@NodeConfig{..} timerSeed initStateMachine logger = do
   fork (rpcHandler eventChan)
   fork (clientReqHandler eventChan)
 
-
   let resetElectionTimer = resetTimer electionTimer
       resetHeartbeatTimer = resetTimer heartbeatTimer
-      raftEnv = RaftEnv eventChan resetElectionTimer resetHeartbeatTimer
+      raftEnv = RaftEnv eventChan resetElectionTimer resetHeartbeatTimer nodeConfig logDest
 
   runRaftT initRaftNodeState raftEnv $
-    handleEventLoop nodeConfig initStateMachine logger
+    handleEventLoop initStateMachine
 
 handleEventLoop
-  :: forall s sm v m.
+  :: forall sm v m.
      ( Show v, Show sm, Show (Action sm v)
-     , MonadConc m
+     , MonadIO m, MonadConc m
      , StateMachine sm v
      , RaftPersist m
      , RaftSendRPC m v
@@ -238,30 +253,29 @@ handleEventLoop
      , RaftPersist m
      , Exception (RaftPersistError m)
      )
-  => NodeConfig
-  -> sm
-  -> (LogMsg -> m ())
-  -> RaftT s v m ()
-handleEventLoop nodeConfig initStateMachine logger = do
+  => sm
+  -> RaftT v m ()
+handleEventLoop initStateMachine = do
     ePersistentState <- lift readPersistentState
     case ePersistentState of
       Left err -> throw err
       Right pstate -> handleEventLoop' initStateMachine pstate
   where
-    handleEventLoop' :: sm -> PersistentState -> RaftT s v m ()
+    handleEventLoop' :: sm -> PersistentState -> RaftT v m ()
     handleEventLoop' stateMachine persistentState = do
       event <- atomically . readTChan =<< asks eventChan
       loadLogEntryTermAtAePrevLogIndex event
       raftNodeState <- get
-      -- traceM ("\n[Event]: " <> show event)
-      -- traceM ("[NodeState]: " <> show raftNodeState)
+      logDebug $ "[Event]: " <> show event
+      logDebug $ "[NodeState]: " <> show raftNodeState
       Right log :: Either (RaftReadLogError m) (Entries v) <- lift $ readLogEntriesFrom index0
-      -- traceM ("[Log]: " <> show log)
-      -- traceM $ "[State Machine]: " <> show stateMachine
-      -- traceM $ "[Persistent State]: " <> show persistentState
+      logDebug $ "[Log]: " <> show log
+      logDebug $ "[State Machine]: " <> show stateMachine
+      logDebug $ "[Persistent State]: " <> show persistentState
       -- Perform core state machine transition, handling the current event
-      let transitionEnv = TransitionEnv nodeConfig stateMachine
-          (resRaftNodeState, resPersistentState, outputs) =
+      nodeConfig <- asks raftNodeConfig
+      let transitionEnv = TransitionEnv nodeConfig stateMachine raftNodeState
+          (resRaftNodeState, resPersistentState, actions, logMsgs) =
             Raft.Handle.handleEvent raftNodeState transitionEnv persistentState event
       -- Write persistent state to disk
       eRes <- lift $ writePersistentState resPersistentState
@@ -270,17 +284,17 @@ handleEventLoop nodeConfig initStateMachine logger = do
         Right _ -> pure ()
       -- Update raft node state with the resulting node state
       put resRaftNodeState
-      -- Handle logs produced by core state machine
-      handleLogs logger $ twLogs outputs
+      -- Handle logs producek by core state machine
+      handleLogs logMsgs
       -- Handle actions produced by core state machine
-      handleActions nodeConfig $ twActions outputs
+      handleActions nodeConfig actions
       -- Apply new log entries to the state machine
       resStateMachine <- applyLogEntries stateMachine
       handleEventLoop' resStateMachine resPersistentState
 
     -- In the case that a node is a follower receiving an AppendEntriesRPC
     -- Event, read the log at the aePrevLogIndex
-    loadLogEntryTermAtAePrevLogIndex :: Event v -> RaftT s v m ()
+    loadLogEntryTermAtAePrevLogIndex :: Event v -> RaftT v m ()
     loadLogEntryTermAtAePrevLogIndex event = do
       case event of
         MessageEvent (RPCMessageEvent (RPCMessage _ (AppendEntriesRPC ae))) -> do
@@ -297,7 +311,7 @@ handleEventLoop nodeConfig initStateMachine logger = do
 
 handleActions
   :: ( Show v, Show sm, Show (Action sm v)
-     , MonadConc m
+     , MonadIO m, MonadConc m
      , StateMachine sm v
      , RaftSendRPC m v
      , RaftSendClient m sm
@@ -306,13 +320,13 @@ handleActions
      )
   => NodeConfig
   -> [Action sm v]
-  -> RaftT s v m ()
+  -> RaftT v m ()
 handleActions = mapM_ . handleAction
 
 handleAction
-  :: forall sm v m s.
+  :: forall sm v m.
      ( Show v, Show sm, Show (Action sm v)
-     , MonadConc m
+     , MonadIO m, MonadConc m
      , StateMachine sm v
      , RaftSendRPC m v
      , RaftSendClient m sm
@@ -321,9 +335,9 @@ handleAction
      )
   => NodeConfig
   -> Action sm v
-  -> RaftT s v m ()
+  -> RaftT v m ()
 handleAction nodeConfig action = do
-  -- traceM $ "[Action]: " <> show action
+  logDebug $ "[Action]: " <> show action
   case action of
     SendRPC nid sendRpcAction -> do
       rpcMsg <- mkRPCfromSendRPCAction sendRpcAction
@@ -347,7 +361,7 @@ handleAction nodeConfig action = do
         RaftNodeState (setLastLogEntryData ns entries)
 
   where
-    mkRPCfromSendRPCAction :: SendRPCAction v -> RaftT s v m (RPCMessage v)
+    mkRPCfromSendRPCAction :: SendRPCAction v -> RaftT v m (RPCMessage v)
     mkRPCfromSendRPCAction sendRPCAction = do
       RaftNodeState ns <- get
       RPCMessage (configNodeId nodeConfig) <$>
@@ -405,12 +419,10 @@ applyLogEntries
      , Exception (RaftReadLogError m)
      , StateMachine sm v )
   => sm
-  -> RaftT s v m sm
+  -> RaftT v m sm
 applyLogEntries stateMachine = do
     raftNodeState@(RaftNodeState nodeState) <- get
     let lastAppliedIndex = lastApplied nodeState
-    -- traceM $ "Last Applied: " <> show lastAppliedIndex
-    --      <> " | Commit: " <> show (commitIndex nodeState)
     if commitIndex nodeState > lastAppliedIndex
       then do
         let resNodeState = incrLastApplied nodeState
@@ -421,9 +433,7 @@ applyLogEntries stateMachine = do
           Left err -> throw err
           Right Nothing -> panic "No log entry at 'newLastAppliedIndex'"
           Right (Just logEntry) -> do
-            -- traceM $ "[Prev State Machine]: " <> show stateMachine
             let newStateMachine = applyCommittedLogEntry stateMachine (entryValue logEntry)
-            -- traceM $ "[Res State Machine]: " <> show newStateMachine
             applyLogEntries newStateMachine
       else pure stateMachine
   where
@@ -447,11 +457,12 @@ applyLogEntries stateMachine = do
     commitIndex = snd . getLastAppliedAndCommitIndex
 
 handleLogs
-  :: (MonadConc m)
-  => (LogMsg -> m ())
-  -> LogMsgs
-  -> RaftT s v m ()
-handleLogs f logs = lift $ mapM_ f logs
+  :: (MonadIO m, MonadConc m)
+  => [LogMsg]
+  -> RaftT v m ()
+handleLogs logs = do
+  logDest <- asks raftNodeLogDest
+  mapM_ (logToDest logDest) logs
 
 ------------------------------------------------------------------------------
  --Event Producers

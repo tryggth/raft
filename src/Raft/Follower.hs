@@ -108,7 +108,7 @@ handleRequestVote :: RPCHandler 'Follower sm RequestVote v
 handleRequestVote ns@(NodeFollowerState fs) sender RequestVote{..} = do
     PersistentState{..} <- get
     let voteGranted = giveVote currentTerm votedFor
-    tellLogWithState ns (toS $ "Vote granted: " ++ show voteGranted)
+    logDebug $ "Vote granted: " <> show voteGranted
     send sender $
       SendRequestVoteResponseRPC $
         RequestVoteResponse
@@ -146,7 +146,7 @@ handleTimeout :: TimeoutHandler 'Follower sm v
 handleTimeout ns@(NodeFollowerState fs) timeout =
   case timeout of
     ElectionTimeout -> do
-      tellLogWithState ns "Follower times out. Starts election. Becomes candidate"
+      logDebug "Follower times out. Starts election. Becomes candidate"
       candidateResultState StartElection <$>
         startElection (fsCommitIndex fs) (fsLastApplied fs) (fsLastLogEntryData fs)
     -- Follower should ignore heartbeat timeout events

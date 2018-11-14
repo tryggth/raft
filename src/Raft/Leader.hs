@@ -118,20 +118,15 @@ handleClientRequest (NodeLeaderState ls) (ClientRequest clientId cr) = do
 -- matchIndex[i] >= N, and log[N].term == currentTerm: set commitIndex = N
 incrCommitIndex :: Show v => LeaderState -> TransitionM sm v LeaderState
 incrCommitIndex leaderState@LeaderState{..} = do
-    tellLogWithState (NodeLeaderState leaderState) $
-      "Checking to increment commit index..."
+    logDebug "Checking if commit index should be incremented..."
     let (_, lastLogEntryTerm, _) = lsLastLogEntryData
     currentTerm <- currentTerm <$> get
-    tellLogWithState (NodeLeaderState leaderState) $
-      "Majority greater than " <> show n <> ": " <> show (majorityGreaterThanN)
     if majorityGreaterThanN && (lastLogEntryTerm == currentTerm)
       then do
-        tellLogWithState (NodeLeaderState leaderState) $
-          "Incrementing commit index to: " <> show n
+        logDebug $ "Incrementing commit index to: " <> show n
         pure leaderState { lsCommitIndex = n }
       else do
-        tellLogWithState (NodeLeaderState leaderState) $
-          "Not incrementing commit index."
+        logDebug "Not incrementing commit index."
         pure leaderState
   where
     n = lsCommitIndex + 1
