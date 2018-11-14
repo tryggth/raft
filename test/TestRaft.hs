@@ -212,7 +212,11 @@ testHandleAction sender action =
     SendRPC nId rpcAction -> do
       msg <- mkRPCfromSendRPCAction sender rpcAction
       testHandleEvent nId (MessageEvent (RPCMessageEvent msg))
-    SendRPCs msgs -> notImplemented
+    SendRPCs msgs ->
+      mapM_ (\(nId, rpcAction) -> do
+          msg <- mkRPCfromSendRPCAction sender rpcAction
+          testHandleEvent nId (MessageEvent (RPCMessageEvent msg))
+        ) (Map.toList msgs)
     BroadcastRPC nIds rpcAction -> mapM_ (\nId -> do
       msg <- mkRPCfromSendRPCAction sender rpcAction
       testHandleEvent nId (MessageEvent (RPCMessageEvent msg))) nIds
