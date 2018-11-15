@@ -307,6 +307,7 @@ handleEventLoop initStateMachine = do
                 Right (mEntry :: Maybe (Entry v)) -> put $
                   RaftNodeState $ NodeFollowerState fs
                     { fsEntryTermAtAEIndex = entryTerm <$> mEntry }
+            _ -> pure ()
         _ -> pure ()
 
 handleActions
@@ -406,18 +407,17 @@ handleAction nodeConfig action = do
           SendRequestVoteRPC rv -> pure (toRPC rv)
           SendRequestVoteResponseRPC rvr -> pure (toRPC rvr)
 
-    resetServerTimer f =
-      lift . resetTimer =<< asks f
-
 -- If commitIndex > lastApplied: increment lastApplied, apply
 -- log[lastApplied] to state machine (Section 5.3) until the state machine
 -- is up to date with all the committed log entries
 applyLogEntries
-  :: ( Show sm
+  :: forall sm m v.
+     ( Show sm
      , MonadConc m
      , RaftReadLog m v
      , Exception (RaftReadLogError m)
-     , StateMachine sm v )
+     , StateMachine sm v
+     )
   => sm
   -> RaftT v m sm
 applyLogEntries stateMachine = do

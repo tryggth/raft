@@ -29,7 +29,6 @@ import Test.DejaFu.Conc hiding (ThreadId)
 import Test.Tasty
 import Test.Tasty.DejaFu hiding (get)
 import qualified Test.HUnit.DejaFu as HUnit
-import qualified Test.Tasty.HUnit as HUnit
 
 import System.Random (mkStdGen)
 
@@ -165,17 +164,20 @@ instance RaftDeleteLog RaftTestM StoreCmd where
     fmap (const $ Right DeleteSuccess) $
       modifyNodeState nid $ \testNodeState ->
         let log = testNodeLog testNodeState
-            newLog = dropWhileR ((>=) idx . entryIndex) log
+            newLog = dropWhileR ((<=) idx . entryIndex) log
          in testNodeState { testNodeLog = newLog }
 
 instance RaftReadLog RaftTestM StoreCmd where
   type RaftReadLogError RaftTestM = RaftTestError
-  readLogEntry (Index idx') = do
-    let idx = if idx' == 0 then 0 else pred idx'
-    log <- fmap testNodeLog . getNodeState =<< askSelfNodeId
-    case log !? fromIntegral idx of
-      Nothing -> traceM (show log) >> pure (Right Nothing)
-      Just e -> pure (Right $ Just e)
+  readLogEntry (Index idx)
+    | idx <= 0 = pure $ Right Nothing
+    | otherwise = do
+        log <- fmap testNodeLog . getNodeState =<< askSelfNodeId
+        case log !? fromIntegral (pred idx) of
+          Nothing -> pure (Right Nothing)
+          Just e
+            | entryIndex e == Index idx -> pure (Right $ Just e)
+            | otherwise -> pure $ Left (RaftTestError "Malformed log")
   readLastLogEntry = do
     log <- fmap testNodeLog . getNodeState =<< askSelfNodeId
     case log of
@@ -226,61 +228,155 @@ type TestClientRespChans = Map ClientId TestClientRespChan
 
 test_concurrency :: [TestTree]
 test_concurrency =
-    [ testGroup "Leader Election" [ noDeadlocksAndExpectedRes leaderElection mempty ]
-    , testGroup "incr(incr(set 'x' 40)) == x := 42"
-        [ noDeadlocksAndExpectedRes incrValue (Map.fromList [("x", 42)], Index 3) ]
+    [ testGroup "Leader Election" [ testConcurrentProps (leaderElection node0) mempty ]
+    , testGroup "incr(set('x', 41)) == x := 42"
+        [ testConcurrentProps incrValue (Map.fromList [("x", 42)], Index 2) ]
+--    , testGroup "set('x', 0) ... 10x incr(x) == x := 10"
+--        [ testConcurrentProps multIncrValue (Map.fromList [("x", 10)], Index 11) ]
+    , testGroup "Follower redirect with no leader" [ testConcurrentProps followerRedirNoLeader NoLeader ]
+    , testGroup "Follower redirect with leader" [ testConcurrentProps followerRedirLeader (CurrentLeader (LeaderId node0)) ]
+    , testGroup "New leader election" [ testConcurrentProps newLeaderElection (CurrentLeader (LeaderId node2)) ]
+--    , testGroup "Comprehensive"
+--        [ testConcurrentProps comprehensive (Index 10, Map.fromList [("x", 9), ("y", 6), ("z", 42)], CurrentLeader (LeaderId node0)) ]
     ]
+
+testConcurrentProps
+  :: (Eq a, Show a)
+  => (TestEventChans -> TestClientRespChans -> ConcIO a)
+  -> a
+  -> TestTree
+testConcurrentProps test expected =
+  testDejafusWithSettings settings
+    [ ("No deadlocks", deadlocksNever)
+    , ("No Exceptions", exceptionsNever)
+    , ("Success", alwaysTrue (== Right expected))
+    ] $ concurrentRaftTest test
   where
     settings = defaultSettings
-      { _discard = Nothing -- Just $ \efa -> Just DiscardTrace -- (if either isDeadlock (const False) efa then DiscardTrace else DiscardResultAndTrace)
-      , _way = randomly (mkStdGen 42) 1
+      { _way = randomly (mkStdGen 42) 100
       }
 
-    noDeadlocksAndExpectedRes :: (Eq a, Show a) => (TestEventChans -> TestClientRespChans -> ConcIO a) -> a -> TestTree
-    noDeadlocksAndExpectedRes test expected =
-      testDejafusWithSettings settings
-        [ ("No deadlocks", deadlocksNever)
-        , ("Success", alwaysTrue (== Right expected))
-        ] $ concurrencyTest test
+    concurrentRaftTest :: (TestEventChans -> TestClientRespChans -> ConcIO a) -> ConcIO a
+    concurrentRaftTest runTest =
+        Control.Monad.Catch.bracket setup teardown $
+          uncurry runTest . snd
+      where
+        setup = do
+          (eventChans, clientRespChans) <- initTestChanMaps
+          let (testNodeEnvs, testNodeStates) = initRaftTestEnvs eventChans clientRespChans
+          tids <- forkTestNodes testNodeEnvs testNodeStates
+          pure (tids, (eventChans, clientRespChans))
 
-concurrencyTest :: (TestEventChans -> TestClientRespChans -> ConcIO a) -> ConcIO a
-concurrencyTest runTest =
-    Control.Monad.Catch.bracket setup teardown $
-      uncurry runTest . snd
+        teardown = mapM_ killThread . fst
+
+leaderElection :: NodeId -> TestEventChans -> TestClientRespChans -> ConcIO Store
+leaderElection nid eventChans clientRespChans = do
+    atomically $ writeTChan nodeEventChan (TimeoutEvent ElectionTimeout)
+    pollForReadResponse nodeEventChan client0RespChan
   where
-    setup = do
-      (eventChans, clientRespChans) <- initTestChanMaps
-      let (testNodeEnvs, testNodeStates) = initRaftTestEnvs eventChans clientRespChans
-      tids <- forkTestNodes testNodeEnvs testNodeStates
-      pure (tids, (eventChans, clientRespChans))
-
-    teardown = mapM_ killThread . fst
-
-leaderElection :: TestEventChans -> TestClientRespChans -> ConcIO Store
-leaderElection eventChans clientRespChans = do
-    atomically $ writeTChan node0EventChan (TimeoutEvent ElectionTimeout)
-    pollForReadResponse node0EventChan client0RespChan
-  where
-    Just node0EventChan = Map.lookup node0 eventChans
+    Just nodeEventChan = Map.lookup nid eventChans
     Just client0RespChan = Map.lookup client0 clientRespChans
 
 incrValue :: TestEventChans -> TestClientRespChans -> ConcIO (Store, Index)
 incrValue eventChans clientRespChans = do
-    leaderElection eventChans clientRespChans
-    ClientWriteResponse (ClientWriteResp idx) <- do
-      atomically $ writeTChan node0EventChan $ clientWriteReq client0 (Set "x" 40)
-      atomically $ readTChan client0RespChan
-    ClientWriteResponse (ClientWriteResp _) <- do
-      atomically $ writeTChan node0EventChan $ clientWriteReq client0 (Incr "x")
-      atomically $ readTChan client0RespChan
-    -- ClientWriteResponse (ClientWriteResp idx) <- do
-    --   atomically $ writeTChan node0EventChan $ clientWriteReq client0 (Incr "x")
-    --   atomically $ readTChan client0RespChan
+    leaderElection node0 eventChans clientRespChans
+    Right idx <- do
+      syncClientWrite node0EventChan (client0, client0RespChan) (Set "x" 41)
+      syncClientWrite node0EventChan (client0, client0RespChan) (Incr"x")
     store <- pollForReadResponse node0EventChan client0RespChan
     pure (store, idx)
   where
     Just node0EventChan = Map.lookup node0 eventChans
     Just client0RespChan = Map.lookup client0 clientRespChans
+
+-- multIncrValue :: TestEventChans -> TestClientRespChans -> ConcIO (Store, Index)
+-- multIncrValue eventChans clientRespChans = do
+--     leaderElection node0 eventChans clientRespChans
+--     syncClientWrite node0EventChan (client0, client0RespChan) (Set "x" 0)
+--     Right idx <-
+--       fmap (Maybe.fromJust . lastMay) $ replicateM 10 $ do
+--         res <- syncClientWrite node0EventChan (client0, client0RespChan) (Incr "x")
+--         pollForReadResponse node0EventChan client0RespChan
+--         pure res
+--     store <- pollForReadResponse node0EventChan client0RespChan
+--     pure (store, idx)
+--   where
+--     Just node0EventChan = Map.lookup node0 eventChans
+--     Just client0RespChan = Map.lookup client0 clientRespChans
+
+leaderRedirect :: TestEventChans -> TestClientRespChans -> ConcIO CurrentLeader
+leaderRedirect eventChans clientRespChans = do
+    Left resp <- syncClientWrite node1EventChan (client0, client0RespChan) (Set "x" 42)
+    pure resp
+  where
+    Just node1EventChan = Map.lookup node1 eventChans
+    Just client0RespChan = Map.lookup client0 clientRespChans
+
+followerRedirNoLeader :: TestEventChans -> TestClientRespChans -> ConcIO CurrentLeader
+followerRedirNoLeader = leaderRedirect
+
+followerRedirLeader :: TestEventChans -> TestClientRespChans -> ConcIO CurrentLeader
+followerRedirLeader eventChans clientRespChans = do
+    leaderElection node0 eventChans clientRespChans
+    leaderRedirect eventChans clientRespChans
+
+newLeaderElection :: TestEventChans -> TestClientRespChans -> ConcIO CurrentLeader
+newLeaderElection eventChans clientRespChans = do
+    leaderElection node0 eventChans clientRespChans
+    leaderElection node1 eventChans clientRespChans
+    leaderElection node2 eventChans clientRespChans
+    atomically $ writeTChan node0EventChan $ clientReadReq client0
+    ClientRedirectResponse (ClientRedirResp ldr) <- atomically $ readTChan client0RespChan
+    pure ldr
+  where
+    Just node0EventChan = Map.lookup node0 eventChans
+    Just client0RespChan = Map.lookup client0 clientRespChans
+
+-- comprehensive :: TestEventChans -> TestClientRespChans -> ConcIO (Index, Store, CurrentLeader)
+-- comprehensive eventChans clientRespChans = do
+--     leaderElection node0 eventChans clientRespChans
+--     Right idx1 <- syncClientWriteClient0 node0EventChan (Set "x" 7)
+--     Right idx2 <- syncClientWriteClient0 node0EventChan (Set "y" 3)
+--     Left (CurrentLeader _) <- syncClientWriteClient0 node1EventChan (Incr "y")
+--     Right _ <- syncClientRead node0EventChan (client0, client0RespChan)
+--
+--     leaderElection node1 eventChans clientRespChans
+--     Right idx3 <- syncClientWriteClient0 node1EventChan (Incr "x")
+--     Right idx4 <- syncClientWriteClient0 node1EventChan (Incr "y")
+--     Right idx5 <- syncClientWriteClient0 node1EventChan (Set "z" 40)
+--     Left (CurrentLeader _) <- syncClientWriteClient0 node2EventChan (Incr "y")
+--     Right _ <- syncClientRead node1EventChan (client0, client0RespChan)
+--
+--     leaderElection node2 eventChans clientRespChans
+--     Right idx6 <- syncClientWriteClient0 node2EventChan (Incr "z")
+--     Right idx7 <- syncClientWriteClient0 node2EventChan (Incr "x")
+--     Left _ <- syncClientWriteClient0 node1EventChan (Set "q" 100)
+--     Right idx8 <- syncClientWriteClient0 node2EventChan (Incr "y")
+--     Left _ <- syncClientWriteClient0 node0EventChan (Incr "z")
+--     Right idx9 <- syncClientWriteClient0 node2EventChan (Incr "y")
+--     Left (CurrentLeader _) <- syncClientWriteClient0 node0EventChan (Incr "y")
+--     Right _ <- syncClientRead node2EventChan (client0, client0RespChan)
+--
+--     leaderElection node0 eventChans clientRespChans
+--     Right idx10 <- syncClientWriteClient0 node0EventChan (Incr "z")
+--     Left (CurrentLeader _) <- syncClientWriteClient0 node1EventChan (Incr "y")
+--
+--     let indices = [idx1, idx2, idx3, idx4, idx5, idx6, idx7, idx8, idx9, idx10]
+--     unless (map Index [1..10] == indices) $
+--       panic (show indices)
+--
+--     Right store <- syncClientRead node0EventChan (client0, client0RespChan)
+--     Left ldr <- syncClientRead node1EventChan (client0, client0RespChan)
+--
+--     pure (idx10, store, ldr)
+--   where
+--     syncClientWriteClient0 = flip syncClientWrite (client0, client0RespChan)
+--
+--     Just node0EventChan = Map.lookup node0 eventChans
+--     Just node1EventChan = Map.lookup node1 eventChans
+--     Just node2EventChan = Map.lookup node2 eventChans
+--
+--     Just client0RespChan = Map.lookup client0 clientRespChans
 
 --------------------------------------------------------------------------------
 -- Helpers
@@ -294,7 +390,32 @@ pollForReadResponse nodeEventChan clientRespChan = do
   res <- atomically $ readTChan clientRespChan
   case res of
     ClientReadResponse (ClientReadResp res) -> pure res
-    _ -> pollForReadResponse nodeEventChan clientRespChan
+    _ -> do
+      liftIO $ Control.Monad.Conc.Class.threadDelay 1000
+      pollForReadResponse nodeEventChan clientRespChan
+
+syncClientRead :: TestEventChan -> (ClientId, TestClientRespChan) -> ConcIO (Either CurrentLeader Store)
+syncClientRead nodeEventChan (cid, clientRespChan) = do
+  atomically $ writeTChan nodeEventChan $ clientReadReq client0
+  res <- atomically $ readTChan clientRespChan
+  case res of
+    ClientReadResponse (ClientReadResp store) -> pure $ Right store
+    ClientRedirectResponse (ClientRedirResp ldr) -> pure $ Left ldr
+    _ -> panic "Failed to recieve valid read response"
+
+syncClientWrite :: TestEventChan -> (ClientId, TestClientRespChan) -> StoreCmd -> ConcIO (Either CurrentLeader Index)
+syncClientWrite nodeEventChan (cid, clientRespChan) cmd = do
+  atomically $ writeTChan nodeEventChan (clientWriteReq cid cmd)
+  res <- atomically $ readTChan clientRespChan
+  case res of
+    ClientWriteResponse (ClientWriteResp idx) -> do
+      heartbeat nodeEventChan
+      pure $ Right idx
+    ClientRedirectResponse (ClientRedirResp ldr) -> pure $ Left ldr
+    _ -> panic "Failed to receive client write response..."
+
+heartbeat :: TestEventChan -> ConcIO ()
+heartbeat eventChan = atomically $ writeTChan eventChan (TimeoutEvent HeartbeatTimeout)
 
 clientReadReq :: ClientId -> Event StoreCmd
 clientReadReq cid = MessageEvent $ ClientRequestEvent $ ClientRequest cid ClientReadReq
