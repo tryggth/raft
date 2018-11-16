@@ -1,5 +1,4 @@
 {-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE GADTs #-}
@@ -7,7 +6,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module TestRaft where
@@ -26,11 +24,17 @@ import qualified Test.Tasty.HUnit as HUnit
 import TestUtils
 
 import Raft hiding (sendClient)
-import Raft.Logging (logMsgToText, logMsgData, logMsgNodeId)
+import Raft.Logging (logMsgToText, logMsgData, logMsgNodeId, LogMsg)
+import Raft.Action
+import Raft.Handle
+import Raft.Log
+import Raft.Monad
+import Raft.Types
+import Raft.RPC
 
---------------------------------------------------------------------------------
--- State Machine & Commands
---------------------------------------------------------------------------------
+------------------------------
+-- State Machine & Commands --
+------------------------------
 
 type Var = ByteString
 
@@ -62,9 +66,9 @@ testSetCmd = Set testVar testInitVal
 testIncrCmd :: StoreCmd
 testIncrCmd = Incr testVar
 
-------------------------------------
--- Scenario Monad
-------------------------------------
+--------------------
+-- Scenario Monad --
+--------------------
 
 type ClientResps = Map ClientId (Seq (ClientResponse Store))
 

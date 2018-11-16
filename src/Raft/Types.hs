@@ -16,22 +16,27 @@ import Numeric.Natural (Natural)
 -- NodeIds
 --------------------------------------------------------------------------------
 
+-- | Unique identifier of a Raft node
 type NodeId = ByteString
 type NodeIds = Set NodeId
 
+-- | Unique identifier of a client
 newtype ClientId = ClientId NodeId
   deriving (Show, Eq, Ord, Generic, Serialize)
 
+-- | Unique identifier of a leader
 newtype LeaderId = LeaderId { unLeaderId :: NodeId }
   deriving (Show, Eq, Generic, Serialize)
 
---------------------------------------------------------------------------------
--- Term
---------------------------------------------------------------------------------
+----------
+-- Term --
+----------
 
+-- | Representation of monotonic election terms
 newtype Term = Term Natural
   deriving (Show, Eq, Ord, Enum, Generic, Serialize)
 
+-- | Initial term. Terms start at 0
 term0 :: Term
 term0 = Term 0
 
@@ -42,13 +47,15 @@ prevTerm :: Term -> Term
 prevTerm (Term 0) = Term 0
 prevTerm t = pred t
 
---------------------------------------------------------------------------------
--- Index
---------------------------------------------------------------------------------
+-----------
+-- Index --
+-----------
 
+-- | Representation of monotonic indices
 newtype Index = Index Natural
   deriving (Show, Eq, Ord, Enum, Num, Integral, Real, Generic, Serialize)
 
+-- | Initial index. Indeces start at 0
 index0 :: Index
 index0 = Index 0
 

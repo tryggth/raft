@@ -15,10 +15,12 @@ import Data.Time
 import Raft.NodeState
 import Raft.Types
 
+-- | Representation of the logs' destination
 data LogDest
   = LogFile FilePath
   | LogStdout
 
+-- | Representation of the severity of the logs
 data Severity
   = Info
   | Debug

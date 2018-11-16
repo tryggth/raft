@@ -28,8 +28,9 @@ import qualified Raft.Logging as Logging
 -- State Machine
 --------------------------------------------------------------------------------
 
---- | The underlying state machine. Functional dependency permitting only
---a single state machine command to be defined to update the state machine.
+-- | Interface to handle commands in the underlying state machine. Functional
+--dependency permitting only a single state machine command to be defined to
+--update the state machine.
 class StateMachine sm v | sm -> v where
   applyCommittedLogEntry :: sm -> v -> sm
 
