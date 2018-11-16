@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="http://www.adjoint.io"><img src="https://www.adjoint.io/assets/img/adjoint-logo@2x.png" width="250"/></a>
+</p>
+
+[![CircleCI](https://circleci.com/gh/adjoint-io/raft.svg?style=svg&circle-token=71138966721e3459d81362f6f379a4782a3f6b7d)](https://circleci.com/gh/adjoint-io/raft)
+
 # Raft
 
 Adjoint's implementation of the Raft consensus algorithm. See [original
