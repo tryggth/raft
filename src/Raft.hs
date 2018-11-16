@@ -11,7 +11,12 @@
 {-# LANGUAGE TypeApplications #-}
 
 module Raft
-  ( RaftSendRPC(..)
+  (
+  -- * State machine type class
+    StateMachine(..)
+
+  -- * Networking type classes
+  , RaftSendRPC(..)
   , RaftRecvRPC(..)
   , RaftSendClient(..)
   , RaftRecvClient(..)
@@ -24,11 +29,9 @@ module Raft
   , runRaftNode
   , runRaftT
 
-  -- Action
-  , Action(..)
-  , SendRPCAction(..)
+  , handleEventLoop
 
-  -- Client
+  -- * Client data types
   , ClientRequest(..)
   , ClientReq(..)
   , ClientResponse(..)
@@ -36,19 +39,15 @@ module Raft
   , ClientWriteResp(..)
   , ClientRedirResp(..)
 
-  -- Config
+  -- * Configuration
   , NodeConfig(..)
 
-  -- Event
+  -- * Events
+  , Event(..)
   , Timeout(..)
   , MessageEvent(..)
-  , Event(..)
 
-  -- Handle
-  , handleEventLoop
-  , handleEvent
-
-  -- Log
+  -- * Log
   , Entry(..)
   , Entries
   , RaftWriteLog(..)
@@ -58,27 +57,20 @@ module Raft
   , RaftLog
   , RaftLogError(..)
   , RaftLogExceptions(..)
-  , updateLog
 
-  -- Logging
+  -- * Logging
   , LogDest(..)
   , Severity(..)
 
-  -- Monad
-  , StateMachine(..)
-  , LogMsg(..)
-  , TransitionEnv(..)
-  , TransitionM(..)
-
-  -- NodeState
+  -- * Raft node states
   , Mode(..)
-  , initRaftNodeState
   , RaftNodeState(..)
   , NodeState(..)
   , CurrentLeader(..)
   , FollowerState(..)
   , CandidateState(..)
   , LeaderState(..)
+  , initRaftNodeState
   , isFollower
   , isCandidate
   , isLeader
@@ -86,24 +78,21 @@ module Raft
   , getLastLogEntryData
   , getLastAppliedAndCommitIndex
 
-  -- Persistent
+  -- * Persistent state
   , PersistentState(..)
   , initPersistentState
 
-  -- Types
+  -- * Basic types
   , NodeId
   , NodeIds
   , ClientId(..)
   , LeaderId(..)
   , Term(..)
-  , term0
-  , incrTerm
   , Index(..)
+  , term0
   , index0
-  , incrIndex
-  , decrIndex
 
-  -- RPC
+  -- * RPC
   , RPC(..)
   , RPCType(..)
   , RPCMessage(..)
@@ -111,8 +100,6 @@ module Raft
   , AppendEntriesResponse(..)
   , RequestVote(..)
   , RequestVoteResponse(..)
-  , EntriesSpec(..)
-  , NoEntriesSpec(..)
   , AppendEntriesData(..)
   ) where
 
@@ -143,18 +130,21 @@ import Raft.RPC
 import Raft.Types
 
 
--- | Provide an interface for nodes to send/receive messages to/from one
+-- | Interface for nodes to send messages to one
 -- another. E.g. Control.Concurrent.Chan, Network.Socket, etc.
 class RaftSendRPC m v where
   sendRPC :: NodeId -> RPCMessage v -> m ()
 
+-- | Interface for nodes to receive messages from one
+-- another
 class RaftRecvRPC m v where
   receiveRPC :: m (RPCMessage v)
 
-
+-- | Interface for Raft nodes to send messages to clients
 class RaftSendClient m sm where
   sendClient :: ClientId -> ClientResponse sm -> m ()
 
+-- | Interface for Raft nodes to receive messages from clients
 class RaftRecvClient m v where
   receiveClient :: m (ClientRequest v)
 
@@ -203,6 +193,8 @@ logDebug msg = flip logDebugIO msg =<< asks raftNodeLogDest
 
 ------------------------------------------------------------------------------
 
+-- | Run timers, RPC and client request handlers and start event loop.
+-- It should run forever
 runRaftNode
   :: ( Show v, Show sm, Show (Action sm v)
      , MonadIO m, MonadConc m
@@ -216,10 +208,10 @@ runRaftNode
      , RaftPersist m
      , Exception (RaftPersistError m)
      )
-   => NodeConfig
-   -> LogDest
-   -> Int
-   -> sm
+   => NodeConfig -- ^ Node configuration
+   -> LogDest -- ^ Logs destination
+   -> Int -- ^ Timer seed
+   -> sm -- ^ Initial state machine state
    -> m ()
 runRaftNode nodeConfig@NodeConfig{..} logDest timerSeed initStateMachine = do
   eventChan <- atomically newTChan
@@ -295,7 +287,7 @@ handleEventLoop initStateMachine = do
     -- In the case that a node is a follower receiving an AppendEntriesRPC
     -- Event, read the log at the aePrevLogIndex
     loadLogEntryTermAtAePrevLogIndex :: Event v -> RaftT v m ()
-    loadLogEntryTermAtAePrevLogIndex event = do
+    loadLogEntryTermAtAePrevLogIndex event =
       case event of
         MessageEvent (RPCMessageEvent (RPCMessage _ (AppendEntriesRPC ae))) -> do
           RaftNodeState rns <- get

@@ -35,9 +35,7 @@ data Transition (init :: Mode) (res :: Mode) where
   DiscoverNewLeader        :: Transition 'Leader 'Follower
   HigherTermFoundLeader    :: Transition 'Leader 'Follower
 
-  -- TODO Replace with specific transition names
   Noop :: Transition init init
-
 deriving instance Show (Transition init res)
 
 -- | Existential type hiding the result type of a transition
@@ -78,7 +76,7 @@ nodeMode (RaftNodeState rns) =
     NodeCandidateState _ -> Candidate
     NodeLeaderState _ -> Leader
 
--- TODO Take term last long entry term and index as argument
+-- | A node in Raft begins as a follower
 initRaftNodeState :: RaftNodeState
 initRaftNodeState =
   RaftNodeState $
@@ -100,6 +98,8 @@ data NodeState (a :: Mode) where
 
 deriving instance Show (NodeState v)
 
+-- | Representation of the current leader in the cluster. The system is
+-- considered to be unavailable if there is no leader
 data CurrentLeader
   = CurrentLeader LeaderId
   | NoLeader
@@ -109,49 +109,51 @@ instance S.Serialize CurrentLeader
 
 data FollowerState = FollowerState
   { fsCurrentLeader :: CurrentLeader
-    -- ^ The id of the current leader
+    -- ^ Id of the current leader
   , fsCommitIndex :: Index
-    -- ^ index of highest log entry known to be committed
+    -- ^ Index of highest log entry known to be committed
   , fsLastApplied :: Index
-    -- ^ index of highest log entry applied to state machine
+    -- ^ Index of highest log entry applied to state machine
   , fsLastLogEntryData :: (Index, Term)
-    -- ^ the index and term of the last log entry in the node's log
+    -- ^ Index and term of the last log entry in the node's log
   , fsEntryTermAtAEIndex :: Maybe Term
     -- ^ The term of the log entry specified in and AppendEntriesRPC
   } deriving (Show)
 
 data CandidateState = CandidateState
   { csCommitIndex :: Index
-    -- ^ index of highest log entry known to be committed
+    -- ^ Index of highest log entry known to be committed
   , csLastApplied :: Index
-    -- ^ index of highest log entry applied to state machine
+    -- ^ Index of highest log entry applied to state machine
   , csVotes :: NodeIds
-    -- ^ votes from other nodes in the raft network
+    -- ^ Votes from other nodes in the raft network
   , csLastLogEntryData :: (Index, Term)
-    -- ^ the index and term of the last log entry in the node's log
+    -- ^ Index and term of the last log entry in the node's log
   } deriving (Show)
 
 data LeaderState = LeaderState
   { lsCommitIndex :: Index
-    -- ^ index of highest log entry known to be committed
+    -- ^ Index of highest log entry known to be committed
   , lsLastApplied :: Index
-    -- ^ index of highest log entry applied to state machine
+    -- ^ Index of highest log entry applied to state machine
   , lsNextIndex :: Map NodeId Index
-    -- ^ for each server, index of the next log entry to send to that server
+    -- ^ For each server, index of the next log entry to send to that server
   , lsMatchIndex :: Map NodeId Index
-    -- ^ for each server, index of highest log entry known to be replicated on server
+    -- ^ For each server, index of highest log entry known to be replicated on server
   , lsLastLogEntryData
       :: ( Index
          , Term
-         , Maybe ClientId -- ^ The only time this will be Nothing is at term 1
+         , Maybe ClientId
          )
-    -- ^ the index, term, and client id of the last log entry in the node's log
+    -- ^ Index, term, and client id of the last log entry in the node's log.
+    -- The only time `Maybe ClientId` will be Nothing is at the initial term.
   } deriving (Show)
 
 --------------------------------------------------------------------------------
 -- Helpers
 --------------------------------------------------------------------------------
 
+-- | Update the last log entry in the node's log
 setLastLogEntryData :: NodeState ns -> Entries v -> NodeState ns
 setLastLogEntryData nodeState entries =
   case entries of
@@ -168,6 +170,8 @@ setLastLogEntryData nodeState entries =
           NodeLeaderState ls
             { lsLastLogEntryData = (entryIndex e, entryTerm e, Just (entryClientId e)) }
 
+-- | Get the last applied index and the commit index of the last log entry in
+-- the node's log
 getLastLogEntryData :: NodeState ns -> (Index, Term)
 getLastLogEntryData nodeState =
   case nodeState of
@@ -176,6 +180,8 @@ getLastLogEntryData nodeState =
     NodeLeaderState ls -> let (peTerm, peIndex, _) = lsLastLogEntryData ls
                            in (peTerm, peIndex)
 
+-- | Get the index of highest log entry applied to state machine and the index
+-- of highest log entry known to be committed
 getLastAppliedAndCommitIndex :: NodeState ns -> (Index, Index)
 getLastAppliedAndCommitIndex nodeState =
   case nodeState of
@@ -183,18 +189,21 @@ getLastAppliedAndCommitIndex nodeState =
     NodeCandidateState cs -> (csLastApplied cs, csCommitIndex cs)
     NodeLeaderState ls -> (lsLastApplied ls, lsCommitIndex ls)
 
+-- | Check if node is in a follower state
 isFollower :: NodeState s  -> Bool
 isFollower nodeState =
   case nodeState of
     NodeFollowerState _ -> True
     _ -> False
 
+-- | Check if node is in a candidate state
 isCandidate :: NodeState s  -> Bool
 isCandidate nodeState =
   case nodeState of
     NodeCandidateState _ -> True
     _ -> False
 
+-- | Check if node is in a leader state
 isLeader :: NodeState s  -> Bool
 isLeader nodeState =
   case nodeState of

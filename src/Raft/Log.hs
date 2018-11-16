@@ -19,20 +19,21 @@ import Data.Sequence (Seq(..), (|>))
 
 import Raft.Types
 
--- | An entry in the replicated log
+-- | Representation of an entry in the replicated log
 data Entry v = Entry
   { entryIndex :: Index
-    -- ^ index of entry in log
+    -- ^ Index of entry in the log
   , entryTerm :: Term
-    -- ^ term when entry was received by leader
+    -- ^ Term when entry was received by leader
   , entryValue :: v
-    -- ^ command to update state machine
+    -- ^ Command to update state machine
   , entryClientId :: ClientId
+    -- ^ Id of the client that issued the command
   } deriving (Show, Generic, Serialize)
 
 type Entries v = Seq (Entry v)
 
--- | The type class specifying how nodes should write log entries to storage.
+-- | Provides an interface for nodes to write log entries to storage.
 class Monad m => RaftWriteLog m v where
   type RaftWriteLogError m
   -- | Write the given log entries to storage
@@ -42,7 +43,7 @@ class Monad m => RaftWriteLog m v where
 
 data DeleteSuccess v = DeleteSuccess
 
--- | The type class specifying how nodes should delete log entries from storage.
+-- | Provides an interface for nodes to delete log entries from storage.
 class Monad m => RaftDeleteLog m v where
   type RaftDeleteLogError m
   -- | Delete log entries from a given index; e.g. 'deleteLogEntriesFrom 7'
@@ -51,14 +52,15 @@ class Monad m => RaftDeleteLog m v where
     :: Exception (RaftDeleteLogError m)
     => Index -> m (Either (RaftDeleteLogError m) (DeleteSuccess v))
 
--- | The type class specifying how nodes should read log entries from storage.
+-- | Provides an interface for nodes to read log entries from storage.
 class Monad m => RaftReadLog m v where
   type RaftReadLogError m
   -- | Read the log at a given index
   readLogEntry
     :: Exception (RaftReadLogError m)
     => Index -> m (Either (RaftReadLogError m) (Maybe (Entry v)))
-  -- | Read log entries from a specific index onwards
+  -- | Read log entries from a specific index onwards, including the specific
+  -- index
   readLogEntriesFrom
     :: Exception (RaftReadLogError m)
     => Index -> m (Either (RaftReadLogError m) (Entries v))
@@ -92,6 +94,8 @@ class Monad m => RaftReadLog m v where
 type RaftLog m v = (RaftReadLog m v, RaftWriteLog m v, RaftDeleteLog m v)
 type RaftLogExceptions m = (Exception (RaftReadLogError m), Exception (RaftWriteLogError m), Exception (RaftDeleteLogError m))
 
+-- | Representation of possible errors that come from reading, writing or
+-- deleting logs from the persistent storage
 data RaftLogError m where
   RaftLogReadError :: RaftReadLogError m -> RaftLogError m
   RaftLogWriteError :: RaftWriteLogError m -> RaftLogError m

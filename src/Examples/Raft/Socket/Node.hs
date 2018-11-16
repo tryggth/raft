@@ -38,11 +38,6 @@ import Raft
 -- Network
 --------------------------------------------------------------------------------
 
-data NodeEnv sm v = NodeEnv
-  { nEnvStore :: TVar (STM IO) sm
-  , nEnvNodeId :: NodeId
-  }
-
 data NodeSocketEnv v = NodeSocketEnv
   { nsSocket :: Socket
   , nsPeers :: TVar (STM IO) (Map NodeId Socket)

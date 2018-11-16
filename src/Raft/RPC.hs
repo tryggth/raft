@@ -12,6 +12,7 @@ import Data.Serialize
 import Raft.Log
 import Raft.Types
 
+-- | Representation of a message sent between nodes
 data RPCMessage v = RPCMessage
   { sender :: NodeId
   , rpc :: RPC v
@@ -65,21 +66,23 @@ data AppendEntriesData v = AppendEntriesData
   , aedEntriesSpec :: EntriesSpec v
   } deriving (Show)
 
+-- | Representation of a message sent from a leader to its peers
 data AppendEntries v = AppendEntries
   { aeTerm :: Term
-    -- ^ leader's term
+    -- ^ Leader's term
   , aeLeaderId :: LeaderId
-    -- ^ so follower can redirect clients
+    -- ^ Leader's identifier so that followers can redirect clients
   , aePrevLogIndex :: Index
-    -- ^ index of log entry immediately preceding new ones
+    -- ^ Index of log entry immediately preceding new ones
   , aePrevLogTerm :: Term
-    -- ^ term of aePrevLogIndex entry
+    -- ^ Term of aePrevLogIndex entry
   , aeEntries :: Entries v
-    -- ^ log entries to store (empty for heartbeat)
+    -- ^ Log entries to store (empty for heartbeat)
   , aeLeaderCommit :: Index
-    -- ^ leader's commit index
+    -- ^ Leader's commit index
   } deriving (Show, Generic, Serialize)
 
+-- | Representation of the response from a follower to an AppendEntries message
 data AppendEntriesResponse = AppendEntriesResponse
   { aerTerm :: Term
     -- ^ current term for leader to update itself
@@ -87,6 +90,8 @@ data AppendEntriesResponse = AppendEntriesResponse
     -- ^ true if follower contained entry matching aePrevLogIndex and aePrevLogTerm
   } deriving (Show, Generic, Serialize)
 
+-- | Representation of the message sent by candidates to their peers to request
+-- their vote
 data RequestVote = RequestVote
   { rvTerm :: Term
     -- ^ candidates term
@@ -98,6 +103,7 @@ data RequestVote = RequestVote
     -- ^ term of candidate's last log entry
   } deriving (Show, Generic, Serialize)
 
+-- | Representation of a response to a RequestVote message
 data RequestVoteResponse = RequestVoteResponse
   { rvrTerm :: Term
     -- ^ current term for candidate to update itself
