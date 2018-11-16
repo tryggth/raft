@@ -2,9 +2,9 @@ name:                raft
 version:             0.1.0.0
 github:              "adjoint-io/raft"
 license:             BSD3
-author:              "Author name here"
-maintainer:          "example@example.com"
-copyright:           "2018 Author name here"
+author:              "Adjoint Inc.
+maintainer:          "info@adjoint.io"
+copyright:           "2018 Adjoint Inc."
 
 extra-source-files:
 - README.md
