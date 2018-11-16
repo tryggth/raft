@@ -21,7 +21,7 @@ interleavings are generated in a raft network and realistic event
 streams are delivered to each node's event queue. We test for the absence of
 deadlocks and exceptions, along with checking that the convergent state of the
 system matches the expected results. These concurrency tests can be found
-[here](https://github.com/adjoint-io/raft/test/TestDejaFu.hs).
+[here](https://github.com/adjoint-io/raft/blob/master/test/TestDejaFu.hs).
 
 ## Ensuring valid transitions between node states
 
