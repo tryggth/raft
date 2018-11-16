@@ -438,7 +438,7 @@ delete log entries, as well as `RaftPersist`.
 We provide an implementation that stores persistent data on files in
 [FileStore.hs](https://github.com/adjoint-io/raft/blob/master/src/Examples/Raft/FileStore.hs)
 
-### Wrapping it together
+### Putting it all together
 
 The last step is wrapping our previous data types that deal with
 networking and persistent data into a single monad that also derives instances
