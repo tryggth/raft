@@ -58,7 +58,3 @@ data ClientRedirResp
   deriving (Show, Generic)
 
 instance S.Serialize ClientRedirResp
-
-
-
-

@@ -22,7 +22,14 @@ module Raft
   , RaftRecvClient(..)
   , RaftPersist(..)
 
+  , EventChan
+
+  , RaftEnv(..)
+  , RaftNodeState(..)
   , runRaftNode
+  , runRaftT
+
+  , handleEventLoop
 
   -- * Client data types
   , ClientRequest(..)
@@ -44,6 +51,7 @@ module Raft
   , Entry(..)
   , Entries
   , RaftWriteLog(..)
+  , DeleteSuccess(..)
   , RaftDeleteLog(..)
   , RaftReadLog (..)
   , RaftLog
@@ -140,12 +148,14 @@ class RaftSendClient m sm where
 class RaftRecvClient m v where
   receiveClient :: m (ClientRequest v)
 
+type EventChan m v = TChan (STM m) (Event v)
+
 -- | The raft server environment composed of the concurrent variables used in
 -- the effectful raft layer.
 data RaftEnv v m = RaftEnv
-  { serverEventChan :: TChan (STM m) (Event v)
-  , serverElectionTimer :: Timer m
-  , serverHeartbeatTimer :: Timer m
+  { eventChan :: EventChan m v
+  , resetElectionTimer :: m ()
+  , resetHeartbeatTimer :: m ()
   , raftNodeConfig :: NodeConfig
   , raftNodeLogDest :: LogDest
   }
@@ -215,9 +225,12 @@ runRaftNode nodeConfig@NodeConfig{..} logDest timerSeed initStateMachine = do
   fork (rpcHandler eventChan)
   fork (clientReqHandler eventChan)
 
-  let raftEnv = RaftEnv eventChan electionTimer heartbeatTimer nodeConfig logDest
+  let resetElectionTimer = resetTimer electionTimer
+      resetHeartbeatTimer = resetTimer heartbeatTimer
+      raftEnv = RaftEnv eventChan resetElectionTimer resetHeartbeatTimer nodeConfig logDest
+
   runRaftT initRaftNodeState raftEnv $
-    handleEventLoop nodeConfig initStateMachine
+    handleEventLoop initStateMachine
 
 handleEventLoop
   :: forall sm v m.
@@ -232,10 +245,9 @@ handleEventLoop
      , RaftPersist m
      , Exception (RaftPersistError m)
      )
-  => NodeConfig
-  -> sm
+  => sm
   -> RaftT v m ()
-handleEventLoop nodeConfig initStateMachine = do
+handleEventLoop initStateMachine = do
     ePersistentState <- lift readPersistentState
     case ePersistentState of
       Left err -> throw err
@@ -243,7 +255,7 @@ handleEventLoop nodeConfig initStateMachine = do
   where
     handleEventLoop' :: sm -> PersistentState -> RaftT v m ()
     handleEventLoop' stateMachine persistentState = do
-      event <- atomically . readTChan =<< asks serverEventChan
+      event <- atomically . readTChan =<< asks eventChan
       loadLogEntryTermAtAePrevLogIndex event
       raftNodeState <- get
       logDebug $ "[Event]: " <> show event
@@ -253,6 +265,7 @@ handleEventLoop nodeConfig initStateMachine = do
       logDebug $ "[State Machine]: " <> show stateMachine
       logDebug $ "[Persistent State]: " <> show persistentState
       -- Perform core state machine transition, handling the current event
+      nodeConfig <- asks raftNodeConfig
       let transitionEnv = TransitionEnv nodeConfig stateMachine raftNodeState
           (resRaftNodeState, resPersistentState, actions, logMsgs) =
             Raft.Handle.handleEvent raftNodeState transitionEnv persistentState event
@@ -286,6 +299,7 @@ handleEventLoop nodeConfig initStateMachine = do
                 Right (mEntry :: Maybe (Entry v)) -> put $
                   RaftNodeState $ NodeFollowerState fs
                     { fsEntryTermAtAEIndex = entryTerm <$> mEntry }
+            _ -> pure ()
         _ -> pure ()
 
 handleActions
@@ -331,8 +345,8 @@ handleAction nodeConfig action = do
     RespondToClient cid cr -> lift $ sendClient cid cr
     ResetTimeoutTimer tout ->
       case tout of
-        ElectionTimeout -> resetServerTimer serverElectionTimer
-        HeartbeatTimeout -> resetServerTimer serverHeartbeatTimer
+        ElectionTimeout -> lift . resetElectionTimer =<< ask
+        HeartbeatTimeout -> lift . resetHeartbeatTimer =<< ask
     AppendLogEntries entries -> do
       lift (updateLog entries)
       -- Update the last log entry data
@@ -349,7 +363,7 @@ handleAction nodeConfig action = do
             (entries, prevLogIndex, prevLogTerm) <-
               case aedEntriesSpec aeData of
                 FromIndex idx -> do
-                  eLogEntries <- lift (readLogEntriesFrom (decrIndex idx))
+                  eLogEntries <- lift (readLogEntriesFrom idx)
                   case eLogEntries of
                     Left err -> throw err
                     Right log ->
@@ -361,7 +375,7 @@ handleAction nodeConfig action = do
                 FromClientReq e -> do
                   if entryIndex e /= Index 1
                     then do
-                      eLogEntry <- lift $ readLogEntry (decrIndex (entryIndex e))
+                      eLogEntry <- lift $ readLogEntry (entryIndex e)
                       case eLogEntry of
                         Left err -> throw err
                         Right Nothing -> pure (singleton e, index0, term0)
@@ -385,24 +399,22 @@ handleAction nodeConfig action = do
           SendRequestVoteRPC rv -> pure (toRPC rv)
           SendRequestVoteResponseRPC rvr -> pure (toRPC rvr)
 
-    resetServerTimer f =
-      lift . resetTimer =<< asks f
-
 -- If commitIndex > lastApplied: increment lastApplied, apply
 -- log[lastApplied] to state machine (Section 5.3) until the state machine
 -- is up to date with all the committed log entries
 applyLogEntries
-  :: ( Show sm
+  :: forall sm m v.
+     ( Show sm
      , MonadConc m
      , RaftReadLog m v
      , Exception (RaftReadLogError m)
-     , StateMachine sm v )
+     , StateMachine sm v
+     )
   => sm
   -> RaftT v m sm
 applyLogEntries stateMachine = do
     raftNodeState@(RaftNodeState nodeState) <- get
-    let lastAppliedIndex = lastApplied nodeState
-    if commitIndex nodeState > lastAppliedIndex
+    if commitIndex nodeState > lastApplied nodeState
       then do
         let resNodeState = incrLastApplied nodeState
         put $ RaftNodeState resNodeState

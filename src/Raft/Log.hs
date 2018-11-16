@@ -7,6 +7,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE DefaultSignatures #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE GADTs #-}
 
 module Raft.Log where
@@ -40,14 +41,16 @@ class Monad m => RaftWriteLog m v where
     :: Exception (RaftWriteLogError m)
     => Entries v -> m (Either (RaftWriteLogError m) ())
 
+data DeleteSuccess v = DeleteSuccess
+
 -- | Provides an interface for nodes to delete log entries from storage.
 class Monad m => RaftDeleteLog m v where
   type RaftDeleteLogError m
   -- | Delete log entries from a given index; e.g. 'deleteLogEntriesFrom 7'
-  -- should delete every log entry
+  -- should delete every log entry with an index >= 7.
   deleteLogEntriesFrom
     :: Exception (RaftDeleteLogError m)
-    => Index -> m (Either (RaftDeleteLogError m) (Maybe (Entry v)))
+    => Index -> m (Either (RaftDeleteLogError m) (DeleteSuccess v))
 
 -- | Provides an interface for nodes to read log entries from storage.
 class Monad m => RaftReadLog m v where
@@ -99,7 +102,8 @@ data RaftLogError m where
   RaftLogDeleteError :: RaftDeleteLogError m -> RaftLogError m
 
 updateLog
-  :: forall m v. ( RaftDeleteLog m v, Exception (RaftDeleteLogError m)
+  :: forall m v.
+     ( RaftDeleteLog m v, Exception (RaftDeleteLogError m)
      , RaftWriteLog m v, Exception (RaftWriteLogError m)
      )
   => Entries v
@@ -108,8 +112,7 @@ updateLog entries =
   case entries of
     Empty -> pure (Right ())
     e :<| _ -> do
-      -- TODO: This does not look right
-      eDel <- deleteLogEntriesFrom (entryIndex e)
+      eDel <- deleteLogEntriesFrom @m @v (entryIndex e)
       case eDel of
         Left err -> pure (Left (RaftLogDeleteError err))
-        Right (_ :: Maybe (Entry v))-> first RaftLogWriteError <$> writeLogEntries entries
+        Right DeleteSuccess -> first RaftLogWriteError <$> writeLogEntries entries

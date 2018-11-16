@@ -143,7 +143,7 @@ handleEvent'
   -> Event v
   -> ((ResultState ns, [LogMsg]), PersistentState, [Action sm v])
 handleEvent' initNodeState transitionEnv persistentState event =
-    runTransitionM transitionEnv persistentState $
+    runTransitionM transitionEnv persistentState $ do
       case event of
         MessageEvent mev ->
           case mev of

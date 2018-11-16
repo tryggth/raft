@@ -191,7 +191,7 @@ instance RaftDeleteLog RTLog StoreCmd where
   deleteLogEntriesFrom idx = do
     nid <- ask
     Just log <- Map.lookup nid <$> gets testNodeLogs
-    fmap (const (Right Nothing)) $ modify $ \testState@TestState{..} ->
+    fmap (const (Right DeleteSuccess)) $ modify $ \testState@TestState{..} ->
       testState { testNodeLogs = Map.insert nid (Seq.dropWhileR ((>= idx) . entryIndex) log) testNodeLogs }
 
 -------------------------------

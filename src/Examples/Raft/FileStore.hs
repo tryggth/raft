@@ -1,5 +1,4 @@
 {-# LANGUAGE TypeSynonymInstances #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -10,6 +9,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE FunctionalDependencies #-}
 
 module Examples.Raft.FileStore where
 
@@ -97,6 +97,4 @@ instance (MonadIO m, MonadConc m, S.Serialize v) => RaftDeleteLog (RaftFileStore
     fileContent <- liftIO $ readFile entriesPath
     case S.decode (toS fileContent) :: Either [Char] (Entries v) of
       Left err -> panic (toS $ "deleteLogEntriesFrom: " ++ err)
-      Right entries -> pure $ const (Right Nothing) $ Seq.dropWhileR ((>= idx) . entryIndex) entries
-
-
+      Right entries -> pure $ const (Right DeleteSuccess) $ Seq.dropWhileR ((>= idx) . entryIndex) entries
