@@ -10,7 +10,7 @@ Adjoint's implementation of the Raft consensus algorithm. See [original
 paper](https://ramcloud.stanford.edu/wiki/download/attachments/11370504/raft.pdf)
 for further details about the protocol.
 
-# Overview and main contributions
+# Overview
 
 Raft proposes a strong single-leader approach to consensus. It simplifies
 operations, as there are no conflicts, while being more efficient than other
