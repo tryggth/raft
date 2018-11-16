@@ -406,9 +406,9 @@ implement those four type classes (`RaftSendRPC`, `RaftRecvRPC`,
 
 In our example, we provide instances of nodes communicating over TCP to other
 nodes
-([Socket/Node.hs](https://github.com/adjoint-io/raft/blob/documentation/src/Examples/Raft/Socket/Node.hs))
+([Socket/Node.hs](https://github.com/adjoint-io/raft/blob/src/Examples/Raft/Socket/Node.hs))
 and clients
-([Socket/Client.hs](https://github.com/adjoint-io/raft/blob/documentation/src/Examples/Raft/Socket/Client.hs)).
+([Socket/Client.hs](https://github.com/adjoint-io/raft/blob/src/Examples/Raft/Socket/Client.hs)).
 
 Note that our datatypes will need to derive instances of `MonadThrow`,
 `MonadCatch`, `MonadMask` and `MonadConc`. This allows us to test concurrent
