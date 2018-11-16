@@ -231,13 +231,9 @@ test_concurrency =
     [ testGroup "Leader Election" [ testConcurrentProps (leaderElection node0) mempty ]
     , testGroup "incr(set('x', 41)) == x := 42"
         [ testConcurrentProps incrValue (Map.fromList [("x", 42)], Index 2) ]
---    , testGroup "set('x', 0) ... 10x incr(x) == x := 10"
---        [ testConcurrentProps multIncrValue (Map.fromList [("x", 10)], Index 11) ]
     , testGroup "Follower redirect with no leader" [ testConcurrentProps followerRedirNoLeader NoLeader ]
     , testGroup "Follower redirect with leader" [ testConcurrentProps followerRedirLeader (CurrentLeader (LeaderId node0)) ]
     , testGroup "New leader election" [ testConcurrentProps newLeaderElection (CurrentLeader (LeaderId node2)) ]
---    , testGroup "Comprehensive"
---        [ testConcurrentProps comprehensive (Index 10, Map.fromList [("x", 9), ("y", 6), ("z", 42)], CurrentLeader (LeaderId node0)) ]
     ]
 
 testConcurrentProps
@@ -289,21 +285,6 @@ incrValue eventChans clientRespChans = do
     Just node0EventChan = Map.lookup node0 eventChans
     Just client0RespChan = Map.lookup client0 clientRespChans
 
--- multIncrValue :: TestEventChans -> TestClientRespChans -> ConcIO (Store, Index)
--- multIncrValue eventChans clientRespChans = do
---     leaderElection node0 eventChans clientRespChans
---     syncClientWrite node0EventChan (client0, client0RespChan) (Set "x" 0)
---     Right idx <-
---       fmap (Maybe.fromJust . lastMay) $ replicateM 10 $ do
---         res <- syncClientWrite node0EventChan (client0, client0RespChan) (Incr "x")
---         pollForReadResponse node0EventChan client0RespChan
---         pure res
---     store <- pollForReadResponse node0EventChan client0RespChan
---     pure (store, idx)
---   where
---     Just node0EventChan = Map.lookup node0 eventChans
---     Just client0RespChan = Map.lookup client0 clientRespChans
-
 leaderRedirect :: TestEventChans -> TestClientRespChans -> ConcIO CurrentLeader
 leaderRedirect eventChans clientRespChans = do
     Left resp <- syncClientWrite node1EventChan (client0, client0RespChan) (Set "x" 42)
@@ -331,52 +312,6 @@ newLeaderElection eventChans clientRespChans = do
   where
     Just node0EventChan = Map.lookup node0 eventChans
     Just client0RespChan = Map.lookup client0 clientRespChans
-
--- comprehensive :: TestEventChans -> TestClientRespChans -> ConcIO (Index, Store, CurrentLeader)
--- comprehensive eventChans clientRespChans = do
---     leaderElection node0 eventChans clientRespChans
---     Right idx1 <- syncClientWriteClient0 node0EventChan (Set "x" 7)
---     Right idx2 <- syncClientWriteClient0 node0EventChan (Set "y" 3)
---     Left (CurrentLeader _) <- syncClientWriteClient0 node1EventChan (Incr "y")
---     Right _ <- syncClientRead node0EventChan (client0, client0RespChan)
---
---     leaderElection node1 eventChans clientRespChans
---     Right idx3 <- syncClientWriteClient0 node1EventChan (Incr "x")
---     Right idx4 <- syncClientWriteClient0 node1EventChan (Incr "y")
---     Right idx5 <- syncClientWriteClient0 node1EventChan (Set "z" 40)
---     Left (CurrentLeader _) <- syncClientWriteClient0 node2EventChan (Incr "y")
---     Right _ <- syncClientRead node1EventChan (client0, client0RespChan)
---
---     leaderElection node2 eventChans clientRespChans
---     Right idx6 <- syncClientWriteClient0 node2EventChan (Incr "z")
---     Right idx7 <- syncClientWriteClient0 node2EventChan (Incr "x")
---     Left _ <- syncClientWriteClient0 node1EventChan (Set "q" 100)
---     Right idx8 <- syncClientWriteClient0 node2EventChan (Incr "y")
---     Left _ <- syncClientWriteClient0 node0EventChan (Incr "z")
---     Right idx9 <- syncClientWriteClient0 node2EventChan (Incr "y")
---     Left (CurrentLeader _) <- syncClientWriteClient0 node0EventChan (Incr "y")
---     Right _ <- syncClientRead node2EventChan (client0, client0RespChan)
---
---     leaderElection node0 eventChans clientRespChans
---     Right idx10 <- syncClientWriteClient0 node0EventChan (Incr "z")
---     Left (CurrentLeader _) <- syncClientWriteClient0 node1EventChan (Incr "y")
---
---     let indices = [idx1, idx2, idx3, idx4, idx5, idx6, idx7, idx8, idx9, idx10]
---     unless (map Index [1..10] == indices) $
---       panic (show indices)
---
---     Right store <- syncClientRead node0EventChan (client0, client0RespChan)
---     Left ldr <- syncClientRead node1EventChan (client0, client0RespChan)
---
---     pure (idx10, store, ldr)
---   where
---     syncClientWriteClient0 = flip syncClientWrite (client0, client0RespChan)
---
---     Just node0EventChan = Map.lookup node0 eventChans
---     Just node1EventChan = Map.lookup node1 eventChans
---     Just node2EventChan = Map.lookup node2 eventChans
---
---     Just client0RespChan = Map.lookup client0 clientRespChans
 
 --------------------------------------------------------------------------------
 -- Helpers
