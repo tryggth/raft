@@ -2,7 +2,7 @@ name:                raft
 version:             0.1.0.0
 github:              "adjoint-io/raft"
 license:             BSD3
-author:              "Adjoint Inc.
+author:              "Adjoint Inc."
 maintainer:          "info@adjoint.io"
 copyright:           "2018 Adjoint Inc."
 
